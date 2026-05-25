@@ -266,7 +266,29 @@ def doctor() -> None:
 
 
 @app.command()
-def run() -> None:
+def dashboard(
+    host: str = typer.Option(None, help="Хост дашборда (по умолчанию из .env или 127.0.0.1)."),
+    port: int = typer.Option(None, help="Порт дашборда (по умолчанию из .env или 8000)."),
+) -> None:
+    """Запустить 3D-дашборд отдельно (без ТГ-агентов).
+
+    Дашборд показывает команду в 3D, позволяет ставить задачи через форму,
+    отслеживать статусы агентов и просматривать проекты в workspace/.
+    """
+    cfg = load_config()
+    _setup_logging(cfg.log_level)
+    from multiagent_tg.dashboard import serve as _serve_dashboard
+
+    actual_host = host or cfg.dashboard_host
+    actual_port = port or cfg.dashboard_port
+    console.print(f"[bold]Дашборд:[/] http://{actual_host}:{actual_port}/")
+    _serve_dashboard(cfg, host=actual_host, port=actual_port)
+
+
+@app.command()
+def run(
+    with_dashboard: bool = typer.Option(True, help="Запустить 3D-дашборд вместе с агентами."),
+) -> None:
     """Запуск всех агентов. Висит в форграунде, Ctrl+C - выход."""
     cfg = load_config()
     _setup_logging(cfg.log_level)
@@ -282,6 +304,14 @@ def run() -> None:
         "[bold]Agents:[/] "
         + ", ".join(f"{a.display_name}({a.role}, {a.model or cfg.llm_model})" for a in cfg.agents)
     )
+
+    if with_dashboard:
+        from multiagent_tg.dashboard import serve_in_background
+
+        serve_in_background(cfg)
+        console.print(
+            f"[bold]Дашборд:[/] http://{cfg.dashboard_host}:{cfg.dashboard_port}/"
+        )
 
     async def _run() -> None:
         memory = Memory(cfg.data_dir / "history.db")

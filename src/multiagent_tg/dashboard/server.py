@@ -18,13 +18,13 @@ import threading
 import time
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler
-from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
 from multiagent_tg.bridge import StatusBoard, TaskQueue, TaskRequest
 from multiagent_tg.config import AppConfig
 from multiagent_tg.dashboard.projects import scan_workspace, write_index_html, write_manifest
+from multiagent_tg.task_tracker import TaskTracker
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +136,44 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
 #toast.err { background: rgba(239, 68, 68, 0.95); }
 
 .empty { color: var(--muted); padding: 8px; font-style: italic; font-size: 12px; }
+
+/* Tabs */
+.tab-header { display: flex; align-items: center; gap: 12px; }
+.tab { cursor: pointer; opacity: 0.5; transition: opacity 0.2s; user-select: none; }
+.tab:hover { opacity: 0.8; }
+.tab.active { opacity: 1; border-bottom: 2px solid var(--accent); padding-bottom: 2px; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Current task */
+.current-task {
+  background: rgba(99, 102, 241, 0.15); border: 1px solid var(--accent);
+  border-radius: 10px; padding: 10px; margin-bottom: 10px;
+}
+.ct-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--accent); font-weight: 700; margin-bottom: 4px; }
+.ct-text { font-size: 12px; line-height: 1.4; max-height: 48px; overflow: hidden; }
+.ct-agent { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+/* Task history */
+.task-item { padding: 8px 10px; border-radius: 8px; border: 1px solid #25305a;
+  margin-bottom: 6px; background: rgba(10, 14, 32, 0.6); }
+.task-item .t-header { display: flex; justify-content: space-between; align-items: center; }
+.task-item .t-text { font-size: 12px; line-height: 1.3; max-height: 36px; overflow: hidden; }
+.task-item .t-meta { color: var(--muted); font-size: 11px; margin-top: 3px; }
+.task-item .status-badge {
+  font-size: 10px; padding: 2px 6px; border-radius: 4px;
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.status-badge.created { background: #374151; color: #9ca3af; }
+.status-badge.assigned { background: rgba(99, 102, 241, 0.2); color: var(--accent); }
+.status-badge.in_progress { background: rgba(245, 158, 11, 0.2); color: var(--warn); }
+.status-badge.review { background: rgba(34, 211, 238, 0.2); color: var(--accent-2); }
+.status-badge.done { background: rgba(34, 197, 94, 0.2); color: var(--ok); }
+.status-badge.failed { background: rgba(239, 68, 68, 0.2); color: var(--err); }
+
+/* Connection lines canvas */
+#connections { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -147,7 +185,8 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
     <div class="sub">кликни по аватарке — выдай задачу. Света раздаёт остальным.</div>
   </div>
   <div class="stats">
-    <span>обработано задач: <b id="stat-processed">—</b></span>
+    <span>обработано: <b id="stat-processed">—</b></span>
+    <span>активных: <b id="stat-active">0</b></span>
     <span>обновлено: <b id="stat-updated">—</b></span>
   </div>
 </div>
@@ -158,8 +197,22 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
 </div>
 
 <div id="right" class="panel">
-  <h2>Проекты <a href="/workspace/index.html" target="_blank">все →</a></h2>
-  <div id="projects"></div>
+  <h2 class="tab-header">
+    <span class="tab active" data-tab="tasks-tab">Задачи</span>
+    <span class="tab" data-tab="projects-tab">Проекты</span>
+    <a href="/workspace/index.html" target="_blank" style="margin-left:auto">все →</a>
+  </h2>
+  <div id="tasks-tab" class="tab-content active">
+    <div id="current-task" class="current-task" style="display:none">
+      <div class="ct-label">сейчас</div>
+      <div class="ct-text" id="ct-text"></div>
+      <div class="ct-agent" id="ct-agent"></div>
+    </div>
+    <div id="task-history"></div>
+  </div>
+  <div id="projects-tab" class="tab-content">
+    <div id="projects"></div>
+  </div>
 </div>
 
 <div id="bottom" class="panel">
@@ -484,13 +537,64 @@ renderer.domElement.addEventListener('click', (ev) => {
   }
 });
 
+// ---------------- Task history ----------------
+function renderTaskHistory(data) {
+  // Current task
+  const ctEl = document.getElementById('current-task');
+  const state = STATE || {};
+  // Try to find current_task from status
+  let ct = null;
+  try { ct = data._currentTask; } catch(e) {}
+  if (ct) {
+    ctEl.style.display = '';
+    document.getElementById('ct-text').textContent = ct.text || '';
+    document.getElementById('ct-agent').textContent = ct.assigned_to
+      ? `→ ${ct.assigned_to}` : 'Света распределяет...';
+  } else { ctEl.style.display = 'none'; }
+
+  // Task list
+  const wrap = document.getElementById('task-history');
+  const tasks = data.tasks || [];
+  if (!tasks.length) {
+    wrap.innerHTML = '<div class="empty">Задач пока нет. Отправьте первую через форму ниже.</div>';
+    return;
+  }
+  wrap.innerHTML = tasks.slice(0, 20).map(t => {
+    const status = t.status || 'created';
+    const statusLabels = {
+      created: 'новая', assigned: 'назначена', in_progress: 'в работе',
+      review: 'ревью', done: 'готово', failed: 'ошибка'
+    };
+    const agentInfo = t.assigned_to ? ` → ${escapeHTML(t.assigned_to)}` : '';
+    const results = (t.results||[]).length ? ` · ${t.results.length} результат(ов)` : '';
+    return `
+    <div class="task-item">
+      <div class="t-header">
+        <span class="t-text">${escapeHTML(t.text.substring(0, 100))}</span>
+        <span class="status-badge ${status}">${statusLabels[status]||status}</span>
+      </div>
+      <div class="t-meta">${t.source}${agentInfo}${results} · ${humanTime(t.created_at)}</div>
+    </div>`;
+  }).join('');
+}
+
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const targetId = tab.dataset.tab;
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(targetId)?.classList.add('active');
+  });
+});
+
 // ---------------- Poll loop ----------------
 async function poll() {
   try {
     const s = await fetchJSON('/api/status');
     if (!AGENTS.length) {
       AGENTS = s.agents_config;
-      // build avatars now
       const n = AGENTS.length;
       AGENTS.forEach((a, i) => {
         const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
@@ -503,15 +607,93 @@ async function poll() {
       s.state.updated_at ? humanTime(s.state.updated_at) : '—';
     applyState();
     renderAgentsList();
+
+    // Render current task from status
+    const ct = s.state.current_task;
+    if (ct) {
+      const ctEl = document.getElementById('current-task');
+      ctEl.style.display = '';
+      document.getElementById('ct-text').textContent = ct.text || '';
+      document.getElementById('ct-agent').textContent = ct.assigned_to
+        ? `→ ${ct.assigned_to}` : 'Света распределяет...';
+    } else {
+      document.getElementById('current-task').style.display = 'none';
+    }
   } catch (e) { console.warn('status poll:', e); }
 
   try {
     const p = await fetchJSON('/api/projects');
     renderProjects(p.projects);
   } catch (e) { console.warn('projects poll:', e); }
+
+  try {
+    const th = await fetchJSON('/api/tasks/history');
+    renderTaskHistory(th);
+    document.getElementById('stat-active').textContent = th.active ?? 0;
+  } catch (e) { console.warn('tasks poll:', e); }
 }
 poll();
 setInterval(poll, 2000);
+
+// ---------------- Connection lines (task delegation) ----------------
+const connectionLines = [];
+const lineMat = new THREE.LineBasicMaterial({
+  color: 0x6366f1, transparent: true, opacity: 0.6, linewidth: 2
+});
+
+function showConnection(fromName, toName) {
+  const from = avatars.find(a => a.userData.name === fromName);
+  const to = avatars.find(a => a.userData.name === toName);
+  if (!from || !to) return;
+  const pts = [
+    new THREE.Vector3(from.position.x, 1.5, from.position.z),
+    new THREE.Vector3(0, 2.0, 0),  // route through hub
+    new THREE.Vector3(to.position.x, 1.5, to.position.z),
+  ];
+  const curve = new THREE.QuadraticBezierCurve3(pts[0], pts[1], pts[2]);
+  const geo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(20));
+  const line = new THREE.Line(geo, lineMat.clone());
+  line.userData.createdAt = performance.now();
+  line.userData.lifetime = 4000;
+  scene.add(line);
+  connectionLines.push(line);
+}
+
+function updateConnections() {
+  const now = performance.now();
+  for (let i = connectionLines.length - 1; i >= 0; i--) {
+    const line = connectionLines[i];
+    const age = now - line.userData.createdAt;
+    if (age > line.userData.lifetime) {
+      scene.remove(line);
+      line.geometry.dispose();
+      line.material.dispose();
+      connectionLines.splice(i, 1);
+    } else {
+      const progress = age / line.userData.lifetime;
+      line.material.opacity = 0.6 * (1 - progress);
+    }
+  }
+}
+
+// Particles floating around hub
+const particleCount = 40;
+const particleGeo = new THREE.BufferGeometry();
+const particlePositions = new Float32Array(particleCount * 3);
+for (let i = 0; i < particleCount; i++) {
+  const angle = Math.random() * Math.PI * 2;
+  const r = 1.5 + Math.random() * 2;
+  particlePositions[i*3] = Math.cos(angle) * r;
+  particlePositions[i*3+1] = 0.8 + Math.random() * 2;
+  particlePositions[i*3+2] = Math.sin(angle) * r;
+}
+particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+const particleMat = new THREE.PointsMaterial({
+  color: 0x6366f1, size: 0.06, transparent: true, opacity: 0.5,
+  blending: THREE.AdditiveBlending, depthWrite: false
+});
+const particles = new THREE.Points(particleGeo, particleMat);
+scene.add(particles);
 
 // ---------------- Animation ----------------
 const clock = new THREE.Clock();
@@ -520,12 +702,18 @@ function animate() {
   hub.rotation.x = t * 0.6; hub.rotation.y = t * 0.8;
   hub.position.y = 1.4 + Math.sin(t * 1.5) * 0.1;
 
+  // Particles rotation
+  particles.rotation.y = t * 0.15;
+  const pos = particles.geometry.attributes.position;
+  for (let i = 0; i < particleCount; i++) {
+    pos.array[i*3+1] += Math.sin(t * 2 + i) * 0.002;
+  }
+  pos.needsUpdate = true;
+
   for (const av of avatars) {
     const st = av.userData.currentState || 'offline';
     const local = t + av.userData.t0;
-    // gentle idle bob
     av.position.y = Math.sin(local * 1.2) * 0.05;
-    // thinking: spin head, glow pulses
     if (st === 'thinking') {
       av.userData.head.rotation.y = local * 2.2;
       av.userData.body.material.emissiveIntensity = 0.5 + 0.5 * Math.abs(Math.sin(local * 3));
@@ -538,6 +726,8 @@ function animate() {
       av.userData.head.rotation.y = Math.sin(local * 0.8) * 0.25;
     }
   }
+
+  updateConnections();
   controls.update();
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
@@ -582,6 +772,7 @@ class _Handler(BaseHTTPRequestHandler):
     config: AppConfig
     task_queue: TaskQueue
     status_board: StatusBoard
+    task_tracker: TaskTracker
 
     # quieter logs
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -652,6 +843,10 @@ class _Handler(BaseHTTPRequestHandler):
                 "projects": [p.to_dict() for p in projects],
                 "generated_at": time.time(),
             })
+            return
+
+        if path == "/api/tasks/history":
+            self._send_json(200, self.task_tracker.snapshot())
             return
 
         if path.startswith("/workspace/"):
@@ -737,12 +932,14 @@ def serve(config: AppConfig, host: str | None = None, port: int | None = None) -
 
     task_queue = TaskQueue(config.data_dir)
     status_board = StatusBoard(config.data_dir)
+    task_tracker = TaskTracker(config.data_dir)
 
     # Bind shared state to handler via closure subclass.
     handler_cls = type("BoundHandler", (_Handler,), {
         "config": config,
         "task_queue": task_queue,
         "status_board": status_board,
+        "task_tracker": task_tracker,
     })
 
     # Регенерируем hub при старте — чтобы /workspace/index.html был свежим.

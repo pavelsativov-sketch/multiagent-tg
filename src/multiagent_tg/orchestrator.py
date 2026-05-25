@@ -17,6 +17,7 @@ from multiagent_tg.bridge import StatusBoard, TaskQueue, TaskRequest
 from multiagent_tg.config import AppConfig
 from multiagent_tg.llm import ChatMessage, LLMClient
 from multiagent_tg.memory import Memory
+from multiagent_tg.task_tracker import TaskTracker
 from multiagent_tg.tools.telegram import DEFAULT_REACTION, SUPPORTED_REACTIONS
 
 log = logging.getLogger(__name__)
@@ -43,7 +44,9 @@ class Orchestrator:
         self._busy_until: dict[str, float] = {}
         self.task_queue = TaskQueue(config.data_dir)
         self.status = StatusBoard(config.data_dir)
+        self.tracker = TaskTracker(config.data_dir)
         self._tasks_loop: asyncio.Task | None = None
+        self._task_counter = 0
 
     def _latest_workspace_file(self) -> str | None:
         files = [
@@ -116,6 +119,13 @@ class Orchestrator:
 
         if await self._try_direct_reaction(msg, text):
             return
+
+        # Track human tasks
+        if sender_name == HUMAN_SENDER and len(text.strip()) > 10:
+            self._task_counter += 1
+            task_id = f"tg-{int(time.time())}-{self._task_counter}"
+            self.tracker.create(task_id, text, source="telegram")
+            self.status.set_current_task(text)
 
         async with self._lock:
             await self._maybe_respond(text, sender_name)
@@ -321,13 +331,17 @@ class Orchestrator:
         target_name = (task.target_agent or "").strip().lower() or None
         target = self.agents_by_name.get(target_name) if target_name else None
 
+        # Track the task
+        self.tracker.create(task.id, task.text, source="dashboard")
+        if target_name:
+            self.tracker.assign(task.id, target_name)
+        self.status.set_current_task(task.text, assigned_to=target_name)
+
         if target and target.name != director.name:
             text = f"{target.display_name}, {task.text}"
         elif target and target.name == director.name:
-            # Заказчик попросил сделать самой Свете — пусть берёт в работу.
             text = task.text
         else:
-            # Адресата нет — приходит как задача от заказчика. Света сама раскидает.
             text = f"[Задача от заказчика]\n{task.text}"
 
         log.info(
@@ -338,8 +352,10 @@ class Orchestrator:
         )
         try:
             await director.client.send_message(chat_id, text)
+            self.tracker.set_status(task.id, "in_progress")
         except Exception as e:
             log.exception("Не смогли запостить задачу из дашборда: %s", e)
+            self.tracker.set_status(task.id, "failed")
 
     def _director(self) -> AgentRuntime | None:
         for a in self.agents:

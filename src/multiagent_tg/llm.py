@@ -1,4 +1,4 @@
-"""OpenAI-совместимый клиент для LLM (Ollama, LM Studio, OpenAI, etc.)."""
+"""OpenAI-совместимый клиент для LLM (Ollama, LM Studio, OpenAI, Gemini, OpenRouter, etc.)."""
 
 from __future__ import annotations
 
@@ -27,20 +27,32 @@ class LLMClient:
     """Тонкая обёртка над AsyncOpenAI с ретраями.
 
     Совместима с любым OpenAI-style endpoint:
-        Ollama:    http://localhost:11434/v1
-        LM Studio: http://localhost:1234/v1
-        OpenAI:    https://api.openai.com/v1
+        Ollama:      http://localhost:11434/v1
+        LM Studio:   http://localhost:1234/v1
+        OpenAI:      https://api.openai.com/v1
+        Gemini:      https://generativelanguage.googleapis.com/v1beta/openai/
+        OpenRouter:  https://openrouter.ai/api/v1
     """
 
     def __init__(self, base_url: str, api_key: str, model: str):
         self.model = model
         self.base_url = base_url
         self.client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=120.0)
-        # Gemini-2.5* по умолчанию использует "thinking" - тратит часть max_tokens
-        # на reasoning. Для коротких ответов (роутинг, doctor) это ломает выдачу.
-        # Отключаем thinking, если endpoint = Gemini.
         self._is_gemini = "googleapis.com" in base_url.lower()
         self._is_openrouter = "openrouter.ai" in base_url.lower()
+        self._is_openai = "api.openai.com" in base_url.lower()
+
+    @property
+    def provider(self) -> str:
+        if self._is_gemini:
+            return "gemini"
+        if self._is_openrouter:
+            return "openrouter"
+        if self._is_openai:
+            return "openai"
+        if "localhost" in self.base_url:
+            return "local"
+        return "custom"
 
     @retry(
         reraise=True,
@@ -70,15 +82,17 @@ class LLMClient:
                 payload["tool_choice"] = tool_choice
 
         # Gemini-2.5: убираем "thinking" чтобы не сжирать max_tokens на reasoning.
-        # reasoning_effort - стандартный OpenAI-параметр (для o-series), Gemini
-        # его понимает и для своих 2.5 моделей.
         if self._is_gemini and self.model.startswith("gemini-2.5"):
             payload["extra_body"] = {"reasoning_effort": "none"}
         elif self._is_openrouter:
             payload["extra_body"] = {"reasoning": {"effort": "none"}}
 
-        log.debug("LLM request: model=%s msgs=%d", self.model, len(messages))
-        response = await self.client.chat.completions.create(**payload)
+        log.debug("LLM request: model=%s provider=%s msgs=%d", self.model, self.provider, len(messages))
+        try:
+            response = await self.client.chat.completions.create(**payload)
+        except Exception as e:
+            log.warning("LLM request failed (model=%s, provider=%s): %s", self.model, self.provider, e)
+            raise
         return response
 
     async def chat_text(
@@ -91,3 +105,15 @@ class LLMClient:
         resp = await self.chat(messages, temperature=temperature, max_tokens=max_tokens)
         content = resp.choices[0].message.content or ""
         return content.strip()
+
+    async def health_check(self) -> dict[str, Any]:
+        """Проверить что LLM-endpoint доступен и отвечает."""
+        try:
+            text = await self.chat_text(
+                [ChatMessage(role="user", content="Скажи 'ok' одним словом.")],
+                temperature=0,
+                max_tokens=50,
+            )
+            return {"ok": True, "response": text, "model": self.model, "provider": self.provider}
+        except Exception as e:
+            return {"ok": False, "error": str(e), "model": self.model, "provider": self.provider}
