@@ -126,6 +126,7 @@ class StatusBoard:
         tmp.replace(self.path)
 
     def set_agent(self, name: str, **fields: Any) -> None:
+        self._load()  # merge with changes from other process
         agents = self._state.setdefault("agents", {})
         cur = agents.setdefault(name, {})
         cur.update(fields)
@@ -133,10 +134,12 @@ class StatusBoard:
         self._flush()
 
     def increment_processed(self) -> None:
+        self._load()
         self._state["tasks_processed"] = int(self._state.get("tasks_processed", 0)) + 1
         self._flush()
 
     def set_current_task(self, text: str, assigned_to: str | None = None) -> None:
+        self._load()
         self._state["current_task"] = {
             "text": text[:200],
             "assigned_to": assigned_to,
@@ -145,6 +148,7 @@ class StatusBoard:
         self._flush()
 
     def clear_current_task(self) -> None:
+        self._load()
         self._state["current_task"] = None
         self._flush()
 

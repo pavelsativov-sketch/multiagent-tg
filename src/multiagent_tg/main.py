@@ -182,7 +182,7 @@ def login(
         console.print(f"[green]OK[/] - {me.first_name} (@{me.username}) id={me.id}")
 
     async def _run() -> None:
-        for agent_cfg in cfg.agents:
+        for agent_cfg in cfg.all_agents:
             if only and agent_cfg.name != only:
                 continue
             console.rule(f"[bold]{agent_cfg.display_name} ({agent_cfg.name})")
@@ -207,7 +207,7 @@ def group_id(
     """
     cfg = load_config()
     _setup_logging(cfg.log_level)
-    target = next((a for a in cfg.agents if a.name == agent_name), None)
+    target = next((a for a in cfg.all_agents if a.name == agent_name), None)
     if not target:
         console.print(f"[red]Агент {agent_name} не найден.[/]")
         sys.exit(1)

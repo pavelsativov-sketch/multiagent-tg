@@ -137,7 +137,7 @@ class AgentRuntime:
         """
         formatted_history = self._format_history(history)
         last_text = history[-1].text if history else ""
-        messages: list[dict[str, Any]] = [
+        raw_messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.config.system_prompt + self._meta_addendum()},
             {"role": "user", "content": formatted_history},
         ]
@@ -150,27 +150,35 @@ class AgentRuntime:
         }
         max_rounds = self.config.max_rounds
         for _ in range(max_rounds):
-            chat_messages = [ChatMessage(role=m["role"], content=m.get("content") or "") for m in messages if m["role"] in ("system", "user", "assistant")]
-            if tools:
-                resp = await self.llm.chat(
-                    chat_messages,
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
-                    tools=tools,
-                )
-            else:
-                resp = await self.llm.chat(
-                    chat_messages,
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
-                )
+            chat_messages = [
+                ChatMessage(role=m["role"], content=m.get("content") or "")
+                for m in raw_messages
+                if m["role"] in ("system", "user", "assistant")
+            ]
+            try:
+                if tools:
+                    resp = await self.llm.chat(
+                        chat_messages,
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens,
+                        tools=tools,
+                    )
+                else:
+                    resp = await self.llm.chat(
+                        chat_messages,
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens,
+                    )
+            except Exception as exc:
+                log.warning("[%s] LLM call failed: %s", self.display_name, exc)
+                return ""
+
             choice = resp.choices[0].message
             tool_calls = getattr(choice, "tool_calls", None) or []
 
             if not tool_calls:
                 return (choice.content or "").strip()
 
-            # Выполняем все tool-calls и кладём результаты в контекст
             assistant_text = choice.content or ""
             tool_text_blocks: list[str] = []
             for call in tool_calls:
@@ -182,8 +190,8 @@ class AgentRuntime:
                 result = await self._exec_tool(fn_name, fn_args, allowed_tool_names)
                 tool_text_blocks.append(f"[tool {fn_name}({fn_args})] -> {result}")
 
-            messages.append({"role": "assistant", "content": assistant_text})
-            messages.append(
+            raw_messages.append({"role": "assistant", "content": assistant_text})
+            raw_messages.append(
                 {
                     "role": "user",
                     "content": "Результаты инструментов:\n" + "\n".join(tool_text_blocks)
@@ -193,7 +201,6 @@ class AgentRuntime:
                 }
             )
 
-        # Превышен лимит раундов — возвращаем последнее, что есть
         return "Слишком много шагов, остановился. Попробую позже."
 
     def _meta_addendum(self) -> str:

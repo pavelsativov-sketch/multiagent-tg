@@ -331,7 +331,8 @@ class Orchestrator:
         target_name = (task.target_agent or "").strip().lower() or None
         target = self.agents_by_name.get(target_name) if target_name else None
 
-        # Track the task
+        # Reload from disk to pick up dashboard's task tracking, then ensure it exists
+        self.tracker.reload()
         self.tracker.create(task.id, task.text, source="dashboard")
         if target_name:
             self.tracker.assign(task.id, target_name)
@@ -356,6 +357,7 @@ class Orchestrator:
         except Exception as e:
             log.exception("Не смогли запостить задачу из дашборда: %s", e)
             self.tracker.set_status(task.id, "failed")
+            self.status.clear_current_task()
 
     def _director(self) -> AgentRuntime | None:
         for a in self.agents:

@@ -56,6 +56,10 @@ class TaskTracker:
         self._tasks: dict[str, TrackedTask] = {}
         self._load()
 
+    def reload(self) -> None:
+        """Reload tasks from disk (picks up changes by other processes)."""
+        self._load()
+
     def _load(self) -> None:
         if self.path.exists():
             try:
@@ -85,7 +89,13 @@ class TaskTracker:
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.path)
 
+    def get(self, task_id: str) -> TrackedTask | None:
+        return self._tasks.get(task_id)
+
     def create(self, task_id: str, text: str, source: str = "telegram") -> TrackedTask:
+        if task_id in self._tasks:
+            log.debug("Task already exists: id=%s, skipping create", task_id)
+            return self._tasks[task_id]
         task = TrackedTask(id=task_id, text=text, source=source)
         self._tasks[task_id] = task
         self._flush()
@@ -129,6 +139,7 @@ class TaskTracker:
         return [t for t in self._tasks.values() if t.assigned_to == agent_name]
 
     def snapshot(self) -> dict[str, Any]:
+        self._load()
         return {
             "total": len(self._tasks),
             "active": len(self.active()),

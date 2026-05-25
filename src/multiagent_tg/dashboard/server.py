@@ -854,19 +854,6 @@ renderer.domElement.addEventListener('click', (ev) => {
 
 // ---------------- Task history ----------------
 function renderTaskHistory(data) {
-  // Current task
-  const ctEl = document.getElementById('current-task');
-  const state = STATE || {};
-  // Try to find current_task from status
-  let ct = null;
-  try { ct = data._currentTask; } catch(e) {}
-  if (ct) {
-    ctEl.style.display = '';
-    document.getElementById('ct-text').textContent = ct.text || '';
-    document.getElementById('ct-agent').textContent = ct.assigned_to
-      ? `→ ${ct.assigned_to}` : 'Света распределяет...';
-  } else { ctEl.style.display = 'none'; }
-
   // Task list
   const wrap = document.getElementById('task-history');
   const tasks = data.tasks || [];
@@ -1181,6 +1168,9 @@ class _Handler(BaseHTTPRequestHandler):
             target = (data.get("target_agent") or "").strip() or None
             if not text:
                 self._send_json(400, {"error": "empty text"})
+                return
+            if len(text) > 4000:
+                self._send_json(400, {"error": "text too long (max 4000 chars)"})
                 return
             if target and target not in {a.name for a in self.config.all_agents}:
                 self._send_json(400, {"error": f"unknown agent: {target}"})

@@ -162,7 +162,7 @@ def load_config(
         sessions_dir=sessions_dir.resolve(),
         data_dir=data_dir.resolve(),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
-        dashboard_host=os.getenv("DASHBOARD_HOST", "127.0.0.1"),
+        dashboard_host=os.getenv("DASHBOARD_HOST", "0.0.0.0"),
         dashboard_port=int(os.getenv("DASHBOARD_PORT", "8000")),
         agents=agents,
         all_agents=all_agents,
