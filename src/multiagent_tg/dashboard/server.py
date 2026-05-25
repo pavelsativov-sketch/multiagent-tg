@@ -325,22 +325,44 @@ const STATE_EMISSIVE = {
   offline:  0x0a0a0a,
 };
 
-function makeLabelSprite(text) {
+// Per-character appearance
+const CHAR_LOOKS = {
+  sveta: { skin: 0xf5d0b0, hair: 0xd4a574, hairStyle: 'long', outfit: 0xf472b6,
+           outfitAccent: 0xdb2777, skirtColor: 0x1e1b4b, accessory: 'clipboard',
+           eyeColor: 0x3b82f6, lipColor: 0xe11d48 },
+  igor:  { skin: 0xe8c8a0, hair: 0x4a3728, hairStyle: 'short', outfit: 0x1e3a5f,
+           outfitAccent: 0x22d3ee, skirtColor: null, accessory: 'laptop',
+           eyeColor: 0x4b5563, lipColor: null },
+  anya:  { skin: 0xf5d0b0, hair: 0xfbbf24, hairStyle: 'ponytail', outfit: 0x7c3aed,
+           outfitAccent: 0xa78bfa, skirtColor: 0x4c1d95, accessory: 'palette',
+           eyeColor: 0x10b981, lipColor: 0xec4899 },
+  kostya:{ skin: 0xe0c0a0, hair: 0x78350f, hairStyle: 'buzz', outfit: 0x365314,
+           outfitAccent: 0xfbbf24, skirtColor: null, accessory: 'magnifier',
+           eyeColor: 0x92400e, lipColor: null },
+};
+const DEFAULT_LOOK = { skin: 0xf0c8a0, hair: 0x6b4423, hairStyle: 'short', outfit: 0x3b82f6,
+  outfitAccent: 0x60a5fa, skirtColor: null, accessory: null, eyeColor: 0x4b5563, lipColor: null };
+
+function makeLabelSprite(text, roleColor) {
   const c = document.createElement('canvas');
-  c.width = 256; c.height = 96;
+  c.width = 512; c.height = 128;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = 'rgba(10, 14, 32, 0.85)';
-  ctx.strokeStyle = '#6366f1'; ctx.lineWidth = 3;
-  roundRect(ctx, 4, 4, 248, 88, 16); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#e6ecff';
-  ctx.font = 'bold 36px -apple-system, Segoe UI, system-ui';
+  // Background pill
+  ctx.fillStyle = 'rgba(10, 14, 32, 0.9)';
+  ctx.strokeStyle = '#' + (roleColor || 0x6366f1).toString(16).padStart(6,'0');
+  ctx.lineWidth = 4;
+  roundRect(ctx, 8, 8, 496, 112, 24); ctx.fill(); ctx.stroke();
+  // Glow
+  ctx.shadowColor = ctx.strokeStyle; ctx.shadowBlur = 12;
+  ctx.fillStyle = '#f0f4ff';
+  ctx.font = 'bold 48px -apple-system, Segoe UI, system-ui';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(text, 128, 48);
+  ctx.fillText(text, 256, 64);
   const tex = new THREE.CanvasTexture(c);
   tex.anisotropy = 4;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
   const sp = new THREE.Sprite(mat);
-  sp.scale.set(2.0, 0.75, 1);
+  sp.scale.set(2.4, 0.6, 1);
   return sp;
 }
 function roundRect(ctx, x, y, w, h, r) {
@@ -353,53 +375,333 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-const avatars = []; // { name, group, body, head, label, role, state, baseY }
+const avatars = [];
 
 function makeAvatar(agent, angle) {
   const color = ROLE_COLORS[agent.role] || ROLE_COLORS.default;
+  const look = CHAR_LOOKS[agent.name] || DEFAULT_LOOK;
   const g = new THREE.Group();
 
-  // Body — capsule
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color, emissive: STATE_EMISSIVE.idle, emissiveIntensity: 0.4,
-    roughness: 0.35, metalness: 0.3 });
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.45, 0.9, 6, 12), bodyMat);
-  body.position.y = 0.95; body.castShadow = true;
-  g.add(body);
+  const skinMat = new THREE.MeshStandardMaterial({
+    color: look.skin, roughness: 0.6, metalness: 0.05 });
+  const outfitMat = new THREE.MeshStandardMaterial({
+    color: look.outfit, emissive: STATE_EMISSIVE.idle, emissiveIntensity: 0.3,
+    roughness: 0.4, metalness: 0.2 });
+  const outfitAccentMat = new THREE.MeshStandardMaterial({
+    color: look.outfitAccent, roughness: 0.4, metalness: 0.3 });
+  const hairMat = new THREE.MeshStandardMaterial({
+    color: look.hair, roughness: 0.8, metalness: 0.05 });
 
-  // Head — sphere
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.35, 24, 16),
-    new THREE.MeshStandardMaterial({ color: 0xfde68a, roughness: 0.5 }));
-  head.position.y = 1.85; head.castShadow = true;
-  g.add(head);
-
-  // Eyes (just dots so the head feels alive)
-  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x0b1020 });
-  for (const ex of [-0.11, 0.11]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 8), eyeMat);
-    eye.position.set(ex, 1.9, 0.3); g.add(eye);
+  // --- LEGS ---
+  for (const lx of [-0.15, 0.15]) {
+    // Upper leg
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.08, 0.55, 8),
+      new THREE.MeshStandardMaterial({ color: look.skirtColor || 0x1e293b, roughness: 0.5 }));
+    leg.position.set(lx, 0.38, 0);
+    g.add(leg);
+    // Shoe
+    const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.1, 0.22),
+      new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.3, metalness: 0.4 }));
+    shoe.position.set(lx, 0.08, 0.04);
+    g.add(shoe);
   }
 
-  // Role pedestal — glowing disk
-  const ped = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.65, 0.65, 0.08, 24),
-    new THREE.MeshStandardMaterial({ color, emissive: color,
-      emissiveIntensity: 0.5, transparent: true, opacity: 0.85 }));
-  ped.position.y = 0.05; g.add(ped);
+  // --- TORSO ---
+  // Main body
+  const torso = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.28, 0.22, 0.65, 12), outfitMat);
+  torso.position.y = 0.95;
+  torso.castShadow = true;
+  g.add(torso);
 
-  // Label above head
-  const label = makeLabelSprite(agent.display_name + (agent.role==='director'?' ★':''));
-  label.position.y = 2.6; g.add(label);
+  // Shoulders
+  const shoulders = new THREE.Mesh(
+    new THREE.BoxGeometry(0.7, 0.12, 0.32), outfitMat);
+  shoulders.position.y = 1.22;
+  g.add(shoulders);
+
+  // Collar / accent stripe
+  const collar = new THREE.Mesh(
+    new THREE.TorusGeometry(0.22, 0.04, 6, 16), outfitAccentMat);
+  collar.position.y = 1.3;
+  collar.rotation.x = Math.PI / 2;
+  g.add(collar);
+
+  // Skirt (for female characters)
+  if (look.skirtColor) {
+    const skirt = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.18, 0.35, 0.35, 12),
+      new THREE.MeshStandardMaterial({ color: look.skirtColor, roughness: 0.5 }));
+    skirt.position.y = 0.62;
+    g.add(skirt);
+  }
+
+  // --- ARMS ---
+  for (const side of [-1, 1]) {
+    // Upper arm
+    const upperArm = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.055, 0.35, 8), outfitMat);
+    upperArm.position.set(side * 0.4, 1.1, 0);
+    upperArm.rotation.z = side * 0.25;
+    g.add(upperArm);
+    // Lower arm (skin)
+    const forearm = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.04, 0.3, 8), skinMat);
+    forearm.position.set(side * 0.48, 0.85, 0.05);
+    forearm.rotation.z = side * 0.15;
+    g.add(forearm);
+    // Hand
+    const hand = new THREE.Mesh(
+      new THREE.SphereGeometry(0.05, 8, 8), skinMat);
+    hand.position.set(side * 0.5, 0.7, 0.08);
+    g.add(hand);
+  }
+
+  // --- NECK ---
+  const neck = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.08, 0.1, 0.12, 8), skinMat);
+  neck.position.y = 1.38;
+  g.add(neck);
+
+  // --- HEAD ---
+  const headGroup = new THREE.Group();
+  headGroup.position.y = 1.55;
+
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.28, 24, 18), skinMat);
+  head.castShadow = true;
+  headGroup.add(head);
+
+  // --- FACE ---
+  // Eyes
+  const eyeWhiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const irisMat = new THREE.MeshBasicMaterial({ color: look.eyeColor });
+  const pupilMat = new THREE.MeshBasicMaterial({ color: 0x0a0a15 });
+  for (const ex of [-0.09, 0.09]) {
+    // Eye white
+    const eyeWhite = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 8), eyeWhiteMat);
+    eyeWhite.position.set(ex, 0.04, 0.24);
+    headGroup.add(eyeWhite);
+    // Iris
+    const iris = new THREE.Mesh(new THREE.SphereGeometry(0.028, 10, 8), irisMat);
+    iris.position.set(ex, 0.04, 0.27);
+    headGroup.add(iris);
+    // Pupil
+    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.015, 8, 8), pupilMat);
+    pupil.position.set(ex, 0.04, 0.28);
+    headGroup.add(pupil);
+    // Eyelid crease
+    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.012, 0.02),
+      new THREE.MeshStandardMaterial({ color: look.hair, roughness: 1 }));
+    brow.position.set(ex, 0.085, 0.25);
+    brow.rotation.x = -0.15;
+    headGroup.add(brow);
+  }
+  // Nose
+  const nose = new THREE.Mesh(
+    new THREE.ConeGeometry(0.025, 0.06, 6),
+    new THREE.MeshStandardMaterial({ color: look.skin, roughness: 0.7 }));
+  nose.position.set(0, -0.01, 0.28);
+  nose.rotation.x = -0.3;
+  headGroup.add(nose);
+  // Mouth
+  if (look.lipColor) {
+    const lip = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.012, 4, 12),
+      new THREE.MeshStandardMaterial({ color: look.lipColor, roughness: 0.4 }));
+    lip.position.set(0, -0.07, 0.24);
+    lip.rotation.x = 0.2;
+    headGroup.add(lip);
+  } else {
+    const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.01, 0.01),
+      new THREE.MeshStandardMaterial({ color: 0xc4756e, roughness: 0.5 }));
+    mouth.position.set(0, -0.07, 0.27);
+    headGroup.add(mouth);
+  }
+  // Ears
+  for (const side of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 6), skinMat);
+    ear.position.set(side * 0.27, 0, 0);
+    ear.scale.set(0.6, 1, 0.7);
+    headGroup.add(ear);
+  }
+
+  // --- HAIR ---
+  if (look.hairStyle === 'long') {
+    // Long flowing hair (Света)
+    const hairTop = new THREE.Mesh(
+      new THREE.SphereGeometry(0.3, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.6), hairMat);
+    hairTop.position.set(0, 0.05, -0.02);
+    headGroup.add(hairTop);
+    // Back hair flowing down
+    const hairBack = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.22, 0.15, 0.55, 10), hairMat);
+    hairBack.position.set(0, -0.25, -0.12);
+    headGroup.add(hairBack);
+    // Side strands
+    for (const side of [-1, 1]) {
+      const strand = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.06, 0.04, 0.4, 6), hairMat);
+      strand.position.set(side * 0.22, -0.15, 0.05);
+      strand.rotation.z = side * 0.15;
+      headGroup.add(strand);
+    }
+  } else if (look.hairStyle === 'ponytail') {
+    // Ponytail (Аня)
+    const hairTop = new THREE.Mesh(
+      new THREE.SphereGeometry(0.3, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), hairMat);
+    hairTop.position.set(0, 0.04, 0);
+    headGroup.add(hairTop);
+    // Ponytail
+    const tail = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.05, 0.5, 8), hairMat);
+    tail.position.set(0, 0.02, -0.28);
+    tail.rotation.x = 0.8;
+    headGroup.add(tail);
+    // Hair tie
+    const tie = new THREE.Mesh(
+      new THREE.TorusGeometry(0.08, 0.02, 6, 12),
+      new THREE.MeshStandardMaterial({ color: 0xec4899 }));
+    tie.position.set(0, 0.08, -0.25);
+    tie.rotation.x = 0.6;
+    headGroup.add(tie);
+    // Bangs
+    const bangs = new THREE.Mesh(
+      new THREE.BoxGeometry(0.35, 0.06, 0.12), hairMat);
+    bangs.position.set(0, 0.16, 0.2);
+    bangs.rotation.x = -0.3;
+    headGroup.add(bangs);
+  } else if (look.hairStyle === 'buzz') {
+    // Buzz cut (Костя)
+    const buzz = new THREE.Mesh(
+      new THREE.SphereGeometry(0.29, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), hairMat);
+    buzz.position.set(0, 0.02, 0);
+    headGroup.add(buzz);
+  } else {
+    // Short styled hair (Игорь)
+    const hairTop = new THREE.Mesh(
+      new THREE.SphereGeometry(0.3, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.5), hairMat);
+    hairTop.position.set(0, 0.04, 0.02);
+    headGroup.add(hairTop);
+    // Side part
+    const sidePart = new THREE.Mesh(
+      new THREE.BoxGeometry(0.15, 0.06, 0.25), hairMat);
+    sidePart.position.set(-0.15, 0.12, 0.05);
+    sidePart.rotation.z = 0.2;
+    headGroup.add(sidePart);
+  }
+
+  g.add(headGroup);
+
+  // --- ACCESSORY ---
+  if (look.accessory === 'clipboard') {
+    // Clipboard for director
+    const board = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.28, 0.02),
+      new THREE.MeshStandardMaterial({ color: 0x8b5e3c, roughness: 0.7 }));
+    board.position.set(-0.55, 0.85, 0.15);
+    board.rotation.z = 0.3;
+    g.add(board);
+    const paper = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.22, 0.005),
+      new THREE.MeshStandardMaterial({ color: 0xfefce8 }));
+    paper.position.set(-0.55, 0.85, 0.17);
+    paper.rotation.z = 0.3;
+    g.add(paper);
+  } else if (look.accessory === 'laptop') {
+    // Laptop for dev
+    const base = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.02, 0.2),
+      new THREE.MeshStandardMaterial({ color: 0x374151, metalness: 0.6, roughness: 0.3 }));
+    base.position.set(0, 0.72, 0.35);
+    g.add(base);
+    const screen = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.18, 0.01),
+      new THREE.MeshStandardMaterial({ color: 0x0f172a, emissive: 0x22d3ee,
+        emissiveIntensity: 0.6 }));
+    screen.position.set(0, 0.82, 0.44);
+    screen.rotation.x = -0.3;
+    g.add(screen);
+  } else if (look.accessory === 'palette') {
+    // Paint palette for designer
+    const palette = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.15, 0.15, 0.02, 12),
+      new THREE.MeshStandardMaterial({ color: 0xd4a574, roughness: 0.7 }));
+    palette.position.set(0.55, 0.8, 0.1);
+    palette.rotation.z = -0.5;
+    palette.rotation.x = 0.8;
+    g.add(palette);
+    // Paint dots
+    const paintColors = [0xef4444, 0x3b82f6, 0xfbbf24, 0x22c55e, 0xa855f7];
+    paintColors.forEach((pc, i) => {
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 8),
+        new THREE.MeshStandardMaterial({ color: pc, roughness: 0.3 }));
+      const a = (i / paintColors.length) * Math.PI * 1.2 + 0.5;
+      dot.position.set(0.55 + Math.cos(a) * 0.09, 0.82, 0.1 + Math.sin(a) * 0.09);
+      g.add(dot);
+    });
+  } else if (look.accessory === 'magnifier') {
+    // Magnifying glass for QA
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.025, 0.2, 8),
+      new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.5 }));
+    handle.position.set(0.52, 0.72, 0.18);
+    handle.rotation.z = -0.7;
+    g.add(handle);
+    const lens = new THREE.Mesh(new THREE.TorusGeometry(0.08, 0.015, 8, 16),
+      new THREE.MeshStandardMaterial({ color: 0xfbbf24, metalness: 0.7, roughness: 0.2 }));
+    lens.position.set(0.48, 0.88, 0.18);
+    g.add(lens);
+    const glass = new THREE.Mesh(new THREE.CircleGeometry(0.07, 16),
+      new THREE.MeshStandardMaterial({ color: 0xbfdbfe, transparent: true, opacity: 0.3 }));
+    glass.position.set(0.48, 0.88, 0.185);
+    g.add(glass);
+  }
+
+  // --- PEDESTAL ---
+  const pedMat = new THREE.MeshStandardMaterial({
+    color, emissive: color, emissiveIntensity: 0.5,
+    transparent: true, opacity: 0.85 });
+  const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.65, 0.06, 32), pedMat);
+  ped.position.y = 0.03; g.add(ped);
+  // Ring glow
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.6, 0.02, 8, 32),
+    new THREE.MeshStandardMaterial({ color, emissive: color,
+      emissiveIntensity: 0.8, transparent: true, opacity: 0.6 }));
+  ring.position.y = 0.07;
+  ring.rotation.x = Math.PI / 2;
+  g.add(ring);
+
+  // --- LABEL ---
+  const roleLabels = { director: 'Директор', dev: 'Разработчик', designer: 'Дизайнер', qa: 'QA' };
+  const labelText = agent.display_name + (agent.role === 'director' ? ' ★' : '');
+  const label = makeLabelSprite(labelText, color);
+  label.position.y = 2.2; g.add(label);
+
+  // Role sub-label
+  const roleSpr = makeRoleSprite(roleLabels[agent.role] || agent.role, color);
+  roleSpr.position.y = 1.95; g.add(roleSpr);
 
   // Place around circle
-  const R = 3.4;
+  const R = 3.8;
   g.position.set(Math.cos(angle) * R, 0, Math.sin(angle) * R);
-  g.rotation.y = -angle + Math.PI / 2; // face center
-  g.userData = { name: agent.name, role: agent.role, body, head, ped, label,
-                 baseY: 0, t0: Math.random() * 10 };
+  g.rotation.y = -angle + Math.PI / 2;
+  g.userData = { name: agent.name, role: agent.role, body: torso, head: headGroup,
+                 ped, ring, label, baseY: 0, t0: Math.random() * 10 };
   scene.add(g);
   return g;
+}
+
+function makeRoleSprite(text, roleColor) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 64;
+  const ctx = c.getContext('2d');
+  const hex = '#' + (roleColor || 0x6366f1).toString(16).padStart(6,'0');
+  ctx.fillStyle = hex;
+  ctx.globalAlpha = 0.7;
+  ctx.font = '24px -apple-system, Segoe UI, system-ui';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, 128, 32);
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const sp = new THREE.Sprite(mat);
+  sp.scale.set(1.4, 0.35, 1);
+  return sp;
 }
 
 // ---------------- Data wiring ----------------
@@ -414,7 +716,6 @@ async function fetchJSON(url, opts) {
 }
 
 function applyState() {
-  // Update avatar materials based on STATE
   for (const av of avatars) {
     const st = STATE[av.userData.name] || {};
     const s = st.state || 'offline';
@@ -423,6 +724,9 @@ function applyState() {
     av.userData.body.material.emissive.setHex(emissive);
     av.userData.body.material.emissiveIntensity = (s === 'idle' || s === 'offline') ? 0.25 : 0.9;
     av.userData.ped.material.emissiveIntensity = (s === 'offline') ? 0.1 : 0.6;
+    if (av.userData.ring) {
+      av.userData.ring.material.emissiveIntensity = (s === 'offline') ? 0.2 : 0.8;
+    }
   }
 }
 
@@ -503,19 +807,30 @@ function toast(msg, isErr=false) {
 document.getElementById('send').onclick = async () => {
   const textEl = document.getElementById('text');
   const text = textEl.value.trim();
-  if (!text) { toast('Пустая задача', true); return; }
+  if (!text) { toast('Напишите задачу', true); return; }
   const target = document.getElementById('target').value || null;
   const btn = document.getElementById('send'); btn.disabled = true;
+  btn.textContent = '⏳';
   try {
-    await fetchJSON('/api/tasks', {
+    const res = await fetchJSON('/api/tasks', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ text, target_agent: target }),
     });
     textEl.value = '';
-    toast(target ? `Отправлено: ${target}` : 'Отправлено Свете');
+    const agentName = target || 'sveta';
+    toast(target ? `✓ Задача → ${target}` : '✓ Задача → Света распределит');
+    // Show connection animation from director to target
+    if (target && target !== 'sveta') showConnection('sveta', target);
+    // Switch to tasks tab
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelector('[data-tab="tasks-tab"]')?.classList.add('active');
+    document.getElementById('tasks-tab')?.classList.add('active');
+    // Force immediate poll
+    setTimeout(poll, 300);
   } catch (e) { toast('Ошибка: ' + e.message, true); }
-  finally { btn.disabled = false; }
+  finally { btn.disabled = false; btn.textContent = 'Отправить'; }
 };
 document.getElementById('text').addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') document.getElementById('send').click();
@@ -713,17 +1028,18 @@ function animate() {
   for (const av of avatars) {
     const st = av.userData.currentState || 'offline';
     const local = t + av.userData.t0;
-    av.position.y = Math.sin(local * 1.2) * 0.05;
+    av.position.y = Math.sin(local * 1.2) * 0.04;
     if (st === 'thinking') {
-      av.userData.head.rotation.y = local * 2.2;
+      av.userData.head.rotation.y = local * 1.8;
       av.userData.body.material.emissiveIntensity = 0.5 + 0.5 * Math.abs(Math.sin(local * 3));
+      if (av.userData.ring) av.userData.ring.rotation.z = local * 2;
     } else if (st === 'typing') {
-      av.position.y += Math.abs(Math.sin(local * 6)) * 0.18;
+      av.position.y += Math.abs(Math.sin(local * 5)) * 0.12;
       av.userData.body.material.emissiveIntensity = 0.6 + 0.3 * Math.sin(local * 5);
     } else if (st === 'error') {
       av.userData.body.material.emissiveIntensity = 0.5 + 0.5 * Math.sin(local * 8);
     } else {
-      av.userData.head.rotation.y = Math.sin(local * 0.8) * 0.25;
+      av.userData.head.rotation.y = Math.sin(local * 0.6) * 0.2;
     }
   }
 
@@ -876,6 +1192,11 @@ class _Handler(BaseHTTPRequestHandler):
                 source="dashboard",
             )
             self.task_queue.append(task)
+            # Also track the task immediately for dashboard visibility
+            self.task_tracker.create(task.id, text, source="dashboard")
+            if target:
+                self.task_tracker.assign(task.id, target)
+            self.status_board.set_current_task(text, assigned_to=target)
             log.info("Задача из дашборда: id=%s target=%s len=%d", task.id, target or "auto", len(text))
             self._send_json(200, {"ok": True, "task": asdict(task)})
             return
