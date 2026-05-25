@@ -83,7 +83,7 @@ class LLMClient:
 
         # Для моделей без reasoning — отключаем "thinking" чтобы не сжирать max_tokens.
         # Reasoning-модели (deepseek-r1, o1, o3, o4, qwen3) оставляем как есть.
-        _reasoning_models = ("deepseek-r1", "o1", "o3", "o4", "qwen3")
+        _reasoning_models = ("deepseek-r1", "deepseek-v4", "o1", "o3", "o4", "qwen3", "nemotron")
         _is_reasoning = any(tag in self.model.lower() for tag in _reasoning_models)
         if self._is_gemini and self.model.startswith("gemini-2.5") and not _is_reasoning:
             payload["extra_body"] = {"reasoning_effort": "none"}

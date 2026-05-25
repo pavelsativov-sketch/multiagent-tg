@@ -89,12 +89,12 @@ def init(
         llm_base_url = "https://openrouter.ai/api/v1"
         llm_api_key = console.input("[bold]OpenRouter API key[/] (sk-or-v1-...): ").strip()
         console.print(
-            "[dim]Лучшие бесплатные: deepseek/deepseek-r1:free, "
-            "qwen/qwen3-235b-a22b:free, meta-llama/llama-4-maverick:free[/]"
+            "[dim]Лучшие бесплатные: qwen/qwen3-coder:free, "
+            "deepseek/deepseek-v4-flash:free, nvidia/nemotron-3-super-120b-a12b:free[/]"
         )
         llm_model = console.input(
-            "[bold]LLM_MODEL[/] [dim](Enter для deepseek/deepseek-r1:free)[/]: "
-        ).strip() or "deepseek/deepseek-r1:free"
+            "[bold]LLM_MODEL[/] [dim](Enter для deepseek/deepseek-v4-flash:free)[/]: "
+        ).strip() or "deepseek/deepseek-v4-flash:free"
     elif llm_provider == "openai":
         llm_base_url = "https://api.openai.com/v1"
         llm_api_key = console.input("[bold]OpenAI API key[/] (sk-...): ").strip()
