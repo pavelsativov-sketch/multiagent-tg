@@ -17,9 +17,11 @@ defaults:
   temperature: 0.7
   max_tokens: 800
   # Модель по умолчанию. Если не задана у агента — берётся отсюда, иначе из .env LLM_MODEL.
-  # Рекомендуемые бесплатные модели:
+  # Лучшие модели по провайдерам:
   #   Gemini:     gemini-2.5-flash (быстро), gemini-2.5-pro (умнее)
-  #   OpenRouter:  google/gemini-2.5-flash:free, google/gemini-2.5-pro-exp-03-25:free
+  #   OpenRouter: deepseek/deepseek-r1:free (мощный), qwen/qwen3-235b-a22b:free (235B)
+  #   Ollama:     qwen3:14b (баланс), qwen3:32b (мощь), llama4:scout (Meta)
+  #   OpenAI:     o4-mini (reasoning), gpt-4.1-mini (быстрый), gpt-4.1 (код)
   model: "gemini-2.5-flash"
 
 agents:
@@ -80,7 +82,10 @@ agents:
     role: "dev"
     session: "igor"
     phone: "+79990000002"   # ЗАМЕНИТЕ на свой номер
-    model: "gemini-2.5-pro" # Самая умная бесплатная модель — для кода
+    # Лучшая модель для кода по провайдеру:
+    #   Gemini: gemini-2.5-pro | OpenRouter: deepseek/deepseek-r1:free
+    #   Ollama: qwen3:32b      | OpenAI: gpt-4.1 или o4-mini
+    model: "gemini-2.5-pro"
     temperature: 0.5
     max_tokens: 2000
     tools: [filesystem, shell, telegram]

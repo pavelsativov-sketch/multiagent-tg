@@ -73,21 +73,37 @@ def init(
         "[dim]Ключ берётся на https://aistudio.google.com/app/apikey[/]"
     )
     llm_provider = console.input(
-        "[bold]LLM провайдер[/] [dim](Enter = gemini; варианты: gemini / ollama / openai)[/]: "
+        "[bold]LLM провайдер[/] [dim](Enter = gemini; варианты: gemini / openrouter / ollama / openai)[/]: "
     ).strip().lower() or "gemini"
 
     if llm_provider == "ollama":
         llm_base_url = "http://localhost:11434/v1"
         llm_api_key = "ollama"
+        console.print(
+            "[dim]Лучшие модели: qwen3:32b (мощь), qwen3:14b (баланс), llama4:scout (Meta)[/]"
+        )
         llm_model = console.input(
-            "[bold]LLM_MODEL[/] [dim](Enter для qwen2.5:7b)[/]: "
-        ).strip() or "qwen2.5:7b"
+            "[bold]LLM_MODEL[/] [dim](Enter для qwen3:14b)[/]: "
+        ).strip() or "qwen3:14b"
+    elif llm_provider == "openrouter":
+        llm_base_url = "https://openrouter.ai/api/v1"
+        llm_api_key = console.input("[bold]OpenRouter API key[/] (sk-or-v1-...): ").strip()
+        console.print(
+            "[dim]Лучшие бесплатные: deepseek/deepseek-r1:free, "
+            "qwen/qwen3-235b-a22b:free, meta-llama/llama-4-maverick:free[/]"
+        )
+        llm_model = console.input(
+            "[bold]LLM_MODEL[/] [dim](Enter для deepseek/deepseek-r1:free)[/]: "
+        ).strip() or "deepseek/deepseek-r1:free"
     elif llm_provider == "openai":
         llm_base_url = "https://api.openai.com/v1"
         llm_api_key = console.input("[bold]OpenAI API key[/] (sk-...): ").strip()
+        console.print(
+            "[dim]Лучшие: o4-mini (reasoning, $1.10/M), gpt-4.1-mini (быстрый, $0.40/M), gpt-4.1 (код, $2/M)[/]"
+        )
         llm_model = console.input(
-            "[bold]LLM_MODEL[/] [dim](Enter для gpt-4o-mini)[/]: "
-        ).strip() or "gpt-4o-mini"
+            "[bold]LLM_MODEL[/] [dim](Enter для gpt-4.1-mini)[/]: "
+        ).strip() or "gpt-4.1-mini"
     else:  # gemini
         llm_base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
         while True:

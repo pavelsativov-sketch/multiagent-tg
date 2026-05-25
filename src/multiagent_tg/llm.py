@@ -81,10 +81,13 @@ class LLMClient:
             if tool_choice:
                 payload["tool_choice"] = tool_choice
 
-        # Gemini-2.5: убираем "thinking" чтобы не сжирать max_tokens на reasoning.
-        if self._is_gemini and self.model.startswith("gemini-2.5"):
+        # Для моделей без reasoning — отключаем "thinking" чтобы не сжирать max_tokens.
+        # Reasoning-модели (deepseek-r1, o1, o3, o4, qwen3) оставляем как есть.
+        _reasoning_models = ("deepseek-r1", "o1", "o3", "o4", "qwen3")
+        _is_reasoning = any(tag in self.model.lower() for tag in _reasoning_models)
+        if self._is_gemini and self.model.startswith("gemini-2.5") and not _is_reasoning:
             payload["extra_body"] = {"reasoning_effort": "none"}
-        elif self._is_openrouter:
+        elif self._is_openrouter and not _is_reasoning:
             payload["extra_body"] = {"reasoning": {"effort": "none"}}
 
         log.debug("LLM request: model=%s provider=%s msgs=%d", self.model, self.provider, len(messages))

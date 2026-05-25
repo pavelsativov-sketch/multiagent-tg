@@ -142,7 +142,7 @@ def load_config(
     data_dir.mkdir(parents=True, exist_ok=True)
 
     # Если у агента не указана модель — берём LLM_MODEL из .env как fallback.
-    env_model = os.getenv("LLM_MODEL", "qwen2.5:14b")
+    env_model = os.getenv("LLM_MODEL", "gemini-2.5-flash")
     for a in all_agents:
         if not a.model:
             a.model = env_model
