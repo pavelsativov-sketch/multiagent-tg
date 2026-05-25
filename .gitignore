@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Project
+.env
+*.session
+*.session-journal
+sessions/*.session
+sessions/*.session-journal
+data/
+*.db
+*.sqlite
+*.sqlite3
+workspace/*
+!workspace/.gitkeep
+tmp_smoke/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
