@@ -284,6 +284,10 @@ class TaskEngine:
                 log.warning("[%s] LLM failed: %s", agent_name, e)
                 return "(Ошибка LLM: модель временно недоступна)"
 
+            if not resp.choices:
+                log.warning("[%s] Empty response from LLM", agent_name)
+                return "(Пустой ответ от модели)"
+
             choice = resp.choices[0].message
             tool_calls = getattr(choice, "tool_calls", None) or []
 
