@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -24,6 +25,7 @@ from urllib.parse import unquote, urlparse
 from multiagent_tg.bridge import StatusBoard, TaskQueue, TaskRequest
 from multiagent_tg.config import AppConfig
 from multiagent_tg.dashboard.projects import scan_workspace, write_index_html, write_manifest
+from multiagent_tg.task_engine import TaskEngine
 from multiagent_tg.task_tracker import TaskTracker
 
 log = logging.getLogger(__name__)
@@ -172,6 +174,31 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
 .status-badge.done { background: rgba(34, 197, 94, 0.2); color: var(--ok); }
 .status-badge.failed { background: rgba(239, 68, 68, 0.2); color: var(--err); }
 
+/* Agent chat messages */
+.chat-msg { padding: 8px 10px; border-radius: 8px; margin-bottom: 6px;
+  border-left: 3px solid var(--accent); background: rgba(10, 14, 32, 0.6); }
+.chat-msg.role-director { border-left-color: #ec4899; }
+.chat-msg.role-dev { border-left-color: #3b82f6; }
+.chat-msg.role-designer { border-left-color: #a855f7; }
+.chat-msg.role-qa { border-left-color: #f59e0b; }
+.chat-msg.role-system { border-left-color: #6b7280; }
+.chat-msg .msg-header { display: flex; justify-content: space-between;
+  margin-bottom: 3px; }
+.chat-msg .msg-name { font-weight: 600; font-size: 12px; }
+.chat-msg .msg-role { font-size: 10px; color: var(--muted); }
+.chat-msg .msg-time { font-size: 10px; color: var(--muted); }
+.chat-msg .msg-text { font-size: 12px; line-height: 1.4; white-space: pre-wrap;
+  word-break: break-word; max-height: 200px; overflow-y: auto; }
+.chat-status { text-align: center; padding: 8px; font-size: 11px; color: var(--muted); }
+.chat-status.processing { color: var(--warn); }
+.chat-status.done { color: var(--ok); }
+.chat-status.failed { color: var(--err); }
+.chat-empty { text-align: center; padding: 20px; color: var(--muted); font-size: 12px; }
+
+/* Typing indicator */
+@keyframes dots { 0%,20% { content: '.'; } 40% { content: '..'; } 60%,100% { content: '...'; } }
+.typing-indicator::after { content: ''; animation: dots 1.5s infinite; }
+
 /* Connection lines canvas */
 #connections { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
 </style>
@@ -199,6 +226,7 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
 <div id="right" class="panel">
   <h2 class="tab-header">
     <span class="tab active" data-tab="tasks-tab">Задачи</span>
+    <span class="tab" data-tab="chat-tab">Чат</span>
     <span class="tab" data-tab="projects-tab">Проекты</span>
     <a href="/workspace/index.html" target="_blank" style="margin-left:auto">все →</a>
   </h2>
@@ -209,6 +237,9 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
       <div class="ct-agent" id="ct-agent"></div>
     </div>
     <div id="task-history"></div>
+  </div>
+  <div id="chat-tab" class="tab-content">
+    <div id="chat-messages"></div>
   </div>
   <div id="projects-tab" class="tab-content">
     <div id="projects"></div>
@@ -822,11 +853,11 @@ document.getElementById('send').onclick = async () => {
     toast(target ? `✓ Задача → ${target}` : '✓ Задача → Света распределит');
     // Show connection animation from director to target
     if (target && target !== 'sveta') showConnection('sveta', target);
-    // Switch to tasks tab
+    // Switch to chat tab to watch agents work
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    document.querySelector('[data-tab="tasks-tab"]')?.classList.add('active');
-    document.getElementById('tasks-tab')?.classList.add('active');
+    document.querySelector('[data-tab="chat-tab"]')?.classList.add('active');
+    document.getElementById('chat-tab')?.classList.add('active');
     // Force immediate poll
     setTimeout(poll, 300);
   } catch (e) { toast('Ошибка: ' + e.message, true); }
@@ -878,6 +909,51 @@ function renderTaskHistory(data) {
       <div class="t-meta">${t.source}${agentInfo}${results} · ${humanTime(t.created_at)}</div>
     </div>`;
   }).join('');
+}
+
+// ---------------- Agent Chat ----------------
+let lastConvCount = 0;
+function renderChat(conversations) {
+  const wrap = document.getElementById('chat-messages');
+  if (!conversations || !conversations.length) {
+    wrap.innerHTML = '<div class="chat-empty">Отправьте задачу — агенты начнут работать и писать сюда.</div>';
+    return;
+  }
+  // Show latest conversation first
+  const sorted = [...conversations].reverse();
+  let html = '';
+  for (const conv of sorted) {
+    const statusLabel = {processing: 'в работе...', done: 'готово', failed: 'ошибка'}[conv.status] || conv.status;
+    html += `<div class="chat-status ${conv.status}">Задача: ${statusLabel}</div>`;
+    for (const m of conv.messages) {
+      const t = m.timestamp ? humanTime(m.timestamp) : '';
+      html += `<div class="chat-msg role-${escapeHTML(m.role)}">`
+        + `<div class="msg-header">`
+        + `<span class="msg-name">${escapeHTML(m.display_name)}</span>`
+        + `<span class="msg-role">${escapeHTML(m.role)}</span>`
+        + `<span class="msg-time">${t}</span>`
+        + `</div>`
+        + `<div class="msg-text">${escapeHTML(m.text)}</div>`
+        + `</div>`;
+    }
+    if (conv.status === 'processing') {
+      html += '<div class="chat-status processing typing-indicator">Агенты работают</div>';
+    }
+  }
+  wrap.innerHTML = html;
+  // Auto-scroll to bottom if new messages
+  const newCount = sorted.reduce((n, c) => n + c.messages.length, 0);
+  if (newCount > lastConvCount) {
+    wrap.scrollTop = wrap.scrollHeight;
+    lastConvCount = newCount;
+    // Show connections for active agents
+    if (sorted[0]?.status === 'processing' && sorted[0]?.messages.length > 0) {
+      const lastMsg = sorted[0].messages[sorted[0].messages.length - 1];
+      if (lastMsg.agent_name !== 'sveta' && lastMsg.agent_name !== 'system') {
+        showConnection('sveta', lastMsg.agent_name);
+      }
+    }
+  }
 }
 
 // Tab switching
@@ -933,6 +1009,11 @@ async function poll() {
     renderTaskHistory(th);
     document.getElementById('stat-active').textContent = th.active ?? 0;
   } catch (e) { console.warn('tasks poll:', e); }
+
+  try {
+    const cv = await fetchJSON('/api/tasks/conversations');
+    renderChat(cv.conversations);
+  } catch (e) { console.warn('conversations poll:', e); }
 }
 poll();
 setInterval(poll, 2000);
@@ -1076,6 +1157,7 @@ class _Handler(BaseHTTPRequestHandler):
     task_queue: TaskQueue
     status_board: StatusBoard
     task_tracker: TaskTracker
+    task_engine: TaskEngine | None
 
     # quieter logs
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -1152,6 +1234,20 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, self.task_tracker.snapshot())
             return
 
+        if path == "/api/tasks/conversations":
+            convs = self.task_engine.get_all_conversations() if self.task_engine else []
+            self._send_json(200, {"conversations": convs})
+            return
+
+        if path.startswith("/api/tasks/conversation/"):
+            tid = path.split("/")[-1]
+            conv = self.task_engine.get_conversation(tid) if self.task_engine else None
+            if conv:
+                self._send_json(200, conv)
+            else:
+                self._send_json(404, {"error": "conversation not found"})
+            return
+
         if path.startswith("/workspace/"):
             self._serve_workspace(path[len("/workspace/"):])
             return
@@ -1187,6 +1283,9 @@ class _Handler(BaseHTTPRequestHandler):
             if target:
                 self.task_tracker.assign(task.id, target)
             self.status_board.set_current_task(text, assigned_to=target)
+            # Submit to TaskEngine for autonomous LLM processing
+            if self.task_engine:
+                self.task_engine.submit(task.id, text, target)
             log.info("Задача из дашборда: id=%s target=%s len=%d", task.id, target or "auto", len(text))
             self._send_json(200, {"ok": True, "task": asdict(task)})
             return
@@ -1236,6 +1335,14 @@ class ThreadedServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
 
 
+def _run_engine_loop(engine: TaskEngine) -> None:
+    """Run TaskEngine's async event loop in a background thread."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    engine.start(loop)
+    loop.run_forever()
+
+
 def serve(config: AppConfig, host: str | None = None, port: int | None = None) -> None:
     """Запустить дашборд (блокирующий вызов)."""
     host = host or config.dashboard_host
@@ -1245,12 +1352,21 @@ def serve(config: AppConfig, host: str | None = None, port: int | None = None) -
     status_board = StatusBoard(config.data_dir)
     task_tracker = TaskTracker(config.data_dir)
 
+    # Start TaskEngine for autonomous LLM processing
+    task_engine = TaskEngine(config)
+    engine_thread = threading.Thread(
+        target=_run_engine_loop, args=(task_engine,), daemon=True, name="task-engine"
+    )
+    engine_thread.start()
+    log.info("TaskEngine started in background thread")
+
     # Bind shared state to handler via closure subclass.
     handler_cls = type("BoundHandler", (_Handler,), {
         "config": config,
         "task_queue": task_queue,
         "status_board": status_board,
         "task_tracker": task_tracker,
+        "task_engine": task_engine,
     })
 
     # Регенерируем hub при старте — чтобы /workspace/index.html был свежим.

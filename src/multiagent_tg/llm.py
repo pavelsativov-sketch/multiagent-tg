@@ -56,8 +56,8 @@ class LLMClient:
 
     @retry(
         reraise=True,
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=2, min=2, max=20),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=3, min=3, max=60),
         retry=retry_if_exception_type(Exception),
     )
     async def chat(
