@@ -73,21 +73,37 @@ def init(
         "[dim]Ключ берётся на https://aistudio.google.com/app/apikey[/]"
     )
     llm_provider = console.input(
-        "[bold]LLM провайдер[/] [dim](Enter = gemini; варианты: gemini / ollama / openai)[/]: "
+        "[bold]LLM провайдер[/] [dim](Enter = gemini; варианты: gemini / openrouter / ollama / openai)[/]: "
     ).strip().lower() or "gemini"
 
     if llm_provider == "ollama":
         llm_base_url = "http://localhost:11434/v1"
         llm_api_key = "ollama"
+        console.print(
+            "[dim]Лучшие модели: qwen3:32b (мощь), qwen3:14b (баланс), llama4:scout (Meta)[/]"
+        )
         llm_model = console.input(
-            "[bold]LLM_MODEL[/] [dim](Enter для qwen2.5:7b)[/]: "
-        ).strip() or "qwen2.5:7b"
+            "[bold]LLM_MODEL[/] [dim](Enter для qwen3:14b)[/]: "
+        ).strip() or "qwen3:14b"
+    elif llm_provider == "openrouter":
+        llm_base_url = "https://openrouter.ai/api/v1"
+        llm_api_key = console.input("[bold]OpenRouter API key[/] (sk-or-v1-...): ").strip()
+        console.print(
+            "[dim]Лучшие бесплатные: qwen/qwen3-coder:free, "
+            "deepseek/deepseek-v4-flash:free, nvidia/nemotron-3-super-120b-a12b:free[/]"
+        )
+        llm_model = console.input(
+            "[bold]LLM_MODEL[/] [dim](Enter для deepseek/deepseek-v4-flash:free)[/]: "
+        ).strip() or "deepseek/deepseek-v4-flash:free"
     elif llm_provider == "openai":
         llm_base_url = "https://api.openai.com/v1"
         llm_api_key = console.input("[bold]OpenAI API key[/] (sk-...): ").strip()
+        console.print(
+            "[dim]Лучшие: o4-mini (reasoning, $1.10/M), gpt-4.1-mini (быстрый, $0.40/M), gpt-4.1 (код, $2/M)[/]"
+        )
         llm_model = console.input(
-            "[bold]LLM_MODEL[/] [dim](Enter для gpt-4o-mini)[/]: "
-        ).strip() or "gpt-4o-mini"
+            "[bold]LLM_MODEL[/] [dim](Enter для gpt-4.1-mini)[/]: "
+        ).strip() or "gpt-4.1-mini"
     else:  # gemini
         llm_base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
         while True:
@@ -182,7 +198,7 @@ def login(
         console.print(f"[green]OK[/] - {me.first_name} (@{me.username}) id={me.id}")
 
     async def _run() -> None:
-        for agent_cfg in cfg.agents:
+        for agent_cfg in cfg.all_agents:
             if only and agent_cfg.name != only:
                 continue
             console.rule(f"[bold]{agent_cfg.display_name} ({agent_cfg.name})")
@@ -207,7 +223,7 @@ def group_id(
     """
     cfg = load_config()
     _setup_logging(cfg.log_level)
-    target = next((a for a in cfg.agents if a.name == agent_name), None)
+    target = next((a for a in cfg.all_agents if a.name == agent_name), None)
     if not target:
         console.print(f"[red]Агент {agent_name} не найден.[/]")
         sys.exit(1)
@@ -266,7 +282,29 @@ def doctor() -> None:
 
 
 @app.command()
-def run() -> None:
+def dashboard(
+    host: str = typer.Option(None, help="Хост дашборда (по умолчанию из .env или 127.0.0.1)."),
+    port: int = typer.Option(None, help="Порт дашборда (по умолчанию из .env или 8000)."),
+) -> None:
+    """Запустить 3D-дашборд отдельно (без ТГ-агентов).
+
+    Дашборд показывает команду в 3D, позволяет ставить задачи через форму,
+    отслеживать статусы агентов и просматривать проекты в workspace/.
+    """
+    cfg = load_config()
+    _setup_logging(cfg.log_level)
+    from multiagent_tg.dashboard import serve as _serve_dashboard
+
+    actual_host = host or cfg.dashboard_host
+    actual_port = port or cfg.dashboard_port
+    console.print(f"[bold]Дашборд:[/] http://{actual_host}:{actual_port}/")
+    _serve_dashboard(cfg, host=actual_host, port=actual_port)
+
+
+@app.command()
+def run(
+    with_dashboard: bool = typer.Option(True, help="Запустить 3D-дашборд вместе с агентами."),
+) -> None:
     """Запуск всех агентов. Висит в форграунде, Ctrl+C - выход."""
     cfg = load_config()
     _setup_logging(cfg.log_level)
@@ -282,6 +320,14 @@ def run() -> None:
         "[bold]Agents:[/] "
         + ", ".join(f"{a.display_name}({a.role}, {a.model or cfg.llm_model})" for a in cfg.agents)
     )
+
+    if with_dashboard:
+        from multiagent_tg.dashboard import serve_in_background
+
+        serve_in_background(cfg)
+        console.print(
+            f"[bold]Дашборд:[/] http://{cfg.dashboard_host}:{cfg.dashboard_port}/"
+        )
 
     async def _run() -> None:
         memory = Memory(cfg.data_dir / "history.db")

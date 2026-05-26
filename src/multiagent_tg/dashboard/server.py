@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -18,13 +19,14 @@ import threading
 import time
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler
-from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
 from multiagent_tg.bridge import StatusBoard, TaskQueue, TaskRequest
 from multiagent_tg.config import AppConfig
 from multiagent_tg.dashboard.projects import scan_workspace, write_index_html, write_manifest
+from multiagent_tg.task_engine import TaskEngine
+from multiagent_tg.task_tracker import TaskTracker
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +138,69 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
 #toast.err { background: rgba(239, 68, 68, 0.95); }
 
 .empty { color: var(--muted); padding: 8px; font-style: italic; font-size: 12px; }
+
+/* Tabs */
+.tab-header { display: flex; align-items: center; gap: 12px; }
+.tab { cursor: pointer; opacity: 0.5; transition: opacity 0.2s; user-select: none; }
+.tab:hover { opacity: 0.8; }
+.tab.active { opacity: 1; border-bottom: 2px solid var(--accent); padding-bottom: 2px; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Current task */
+.current-task {
+  background: rgba(99, 102, 241, 0.15); border: 1px solid var(--accent);
+  border-radius: 10px; padding: 10px; margin-bottom: 10px;
+}
+.ct-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--accent); font-weight: 700; margin-bottom: 4px; }
+.ct-text { font-size: 12px; line-height: 1.4; max-height: 48px; overflow: hidden; }
+.ct-agent { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+/* Task history */
+.task-item { padding: 8px 10px; border-radius: 8px; border: 1px solid #25305a;
+  margin-bottom: 6px; background: rgba(10, 14, 32, 0.6); }
+.task-item .t-header { display: flex; justify-content: space-between; align-items: center; }
+.task-item .t-text { font-size: 12px; line-height: 1.3; max-height: 36px; overflow: hidden; }
+.task-item .t-meta { color: var(--muted); font-size: 11px; margin-top: 3px; }
+.task-item .status-badge {
+  font-size: 10px; padding: 2px 6px; border-radius: 4px;
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.status-badge.created { background: #374151; color: #9ca3af; }
+.status-badge.assigned { background: rgba(99, 102, 241, 0.2); color: var(--accent); }
+.status-badge.in_progress { background: rgba(245, 158, 11, 0.2); color: var(--warn); }
+.status-badge.review { background: rgba(34, 211, 238, 0.2); color: var(--accent-2); }
+.status-badge.done { background: rgba(34, 197, 94, 0.2); color: var(--ok); }
+.status-badge.failed { background: rgba(239, 68, 68, 0.2); color: var(--err); }
+
+/* Agent chat messages */
+.chat-msg { padding: 8px 10px; border-radius: 8px; margin-bottom: 6px;
+  border-left: 3px solid var(--accent); background: rgba(10, 14, 32, 0.6); }
+.chat-msg.role-director { border-left-color: #ec4899; }
+.chat-msg.role-dev { border-left-color: #3b82f6; }
+.chat-msg.role-designer { border-left-color: #a855f7; }
+.chat-msg.role-qa { border-left-color: #f59e0b; }
+.chat-msg.role-system { border-left-color: #6b7280; }
+.chat-msg .msg-header { display: flex; justify-content: space-between;
+  margin-bottom: 3px; }
+.chat-msg .msg-name { font-weight: 600; font-size: 12px; }
+.chat-msg .msg-role { font-size: 10px; color: var(--muted); }
+.chat-msg .msg-time { font-size: 10px; color: var(--muted); }
+.chat-msg .msg-text { font-size: 12px; line-height: 1.4; white-space: pre-wrap;
+  word-break: break-word; max-height: 200px; overflow-y: auto; }
+.chat-status { text-align: center; padding: 8px; font-size: 11px; color: var(--muted); }
+.chat-status.processing { color: var(--warn); }
+.chat-status.done { color: var(--ok); }
+.chat-status.failed { color: var(--err); }
+.chat-empty { text-align: center; padding: 20px; color: var(--muted); font-size: 12px; }
+
+/* Typing indicator */
+@keyframes dots { 0%,20% { content: '.'; } 40% { content: '..'; } 60%,100% { content: '...'; } }
+.typing-indicator::after { content: ''; animation: dots 1.5s infinite; }
+
+/* Connection lines canvas */
+#connections { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -147,7 +212,8 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
     <div class="sub">кликни по аватарке — выдай задачу. Света раздаёт остальным.</div>
   </div>
   <div class="stats">
-    <span>обработано задач: <b id="stat-processed">—</b></span>
+    <span>обработано: <b id="stat-processed">—</b></span>
+    <span>активных: <b id="stat-active">0</b></span>
     <span>обновлено: <b id="stat-updated">—</b></span>
   </div>
 </div>
@@ -158,8 +224,26 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
 </div>
 
 <div id="right" class="panel">
-  <h2>Проекты <a href="/workspace/index.html" target="_blank">все →</a></h2>
-  <div id="projects"></div>
+  <h2 class="tab-header">
+    <span class="tab active" data-tab="tasks-tab">Задачи</span>
+    <span class="tab" data-tab="chat-tab">Чат</span>
+    <span class="tab" data-tab="projects-tab">Проекты</span>
+    <a href="/workspace/index.html" target="_blank" style="margin-left:auto">все →</a>
+  </h2>
+  <div id="tasks-tab" class="tab-content active">
+    <div id="current-task" class="current-task" style="display:none">
+      <div class="ct-label">сейчас</div>
+      <div class="ct-text" id="ct-text"></div>
+      <div class="ct-agent" id="ct-agent"></div>
+    </div>
+    <div id="task-history"></div>
+  </div>
+  <div id="chat-tab" class="tab-content">
+    <div id="chat-messages"></div>
+  </div>
+  <div id="projects-tab" class="tab-content">
+    <div id="projects"></div>
+  </div>
 </div>
 
 <div id="bottom" class="panel">
@@ -272,22 +356,44 @@ const STATE_EMISSIVE = {
   offline:  0x0a0a0a,
 };
 
-function makeLabelSprite(text) {
+// Per-character appearance
+const CHAR_LOOKS = {
+  sveta: { skin: 0xf5d0b0, hair: 0xd4a574, hairStyle: 'long', outfit: 0xf472b6,
+           outfitAccent: 0xdb2777, skirtColor: 0x1e1b4b, accessory: 'clipboard',
+           eyeColor: 0x3b82f6, lipColor: 0xe11d48 },
+  igor:  { skin: 0xe8c8a0, hair: 0x4a3728, hairStyle: 'short', outfit: 0x1e3a5f,
+           outfitAccent: 0x22d3ee, skirtColor: null, accessory: 'laptop',
+           eyeColor: 0x4b5563, lipColor: null },
+  anya:  { skin: 0xf5d0b0, hair: 0xfbbf24, hairStyle: 'ponytail', outfit: 0x7c3aed,
+           outfitAccent: 0xa78bfa, skirtColor: 0x4c1d95, accessory: 'palette',
+           eyeColor: 0x10b981, lipColor: 0xec4899 },
+  kostya:{ skin: 0xe0c0a0, hair: 0x78350f, hairStyle: 'buzz', outfit: 0x365314,
+           outfitAccent: 0xfbbf24, skirtColor: null, accessory: 'magnifier',
+           eyeColor: 0x92400e, lipColor: null },
+};
+const DEFAULT_LOOK = { skin: 0xf0c8a0, hair: 0x6b4423, hairStyle: 'short', outfit: 0x3b82f6,
+  outfitAccent: 0x60a5fa, skirtColor: null, accessory: null, eyeColor: 0x4b5563, lipColor: null };
+
+function makeLabelSprite(text, roleColor) {
   const c = document.createElement('canvas');
-  c.width = 256; c.height = 96;
+  c.width = 512; c.height = 128;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = 'rgba(10, 14, 32, 0.85)';
-  ctx.strokeStyle = '#6366f1'; ctx.lineWidth = 3;
-  roundRect(ctx, 4, 4, 248, 88, 16); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#e6ecff';
-  ctx.font = 'bold 36px -apple-system, Segoe UI, system-ui';
+  // Background pill
+  ctx.fillStyle = 'rgba(10, 14, 32, 0.9)';
+  ctx.strokeStyle = '#' + (roleColor || 0x6366f1).toString(16).padStart(6,'0');
+  ctx.lineWidth = 4;
+  roundRect(ctx, 8, 8, 496, 112, 24); ctx.fill(); ctx.stroke();
+  // Glow
+  ctx.shadowColor = ctx.strokeStyle; ctx.shadowBlur = 12;
+  ctx.fillStyle = '#f0f4ff';
+  ctx.font = 'bold 48px -apple-system, Segoe UI, system-ui';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(text, 128, 48);
+  ctx.fillText(text, 256, 64);
   const tex = new THREE.CanvasTexture(c);
   tex.anisotropy = 4;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
   const sp = new THREE.Sprite(mat);
-  sp.scale.set(2.0, 0.75, 1);
+  sp.scale.set(2.4, 0.6, 1);
   return sp;
 }
 function roundRect(ctx, x, y, w, h, r) {
@@ -300,53 +406,333 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-const avatars = []; // { name, group, body, head, label, role, state, baseY }
+const avatars = [];
 
 function makeAvatar(agent, angle) {
   const color = ROLE_COLORS[agent.role] || ROLE_COLORS.default;
+  const look = CHAR_LOOKS[agent.name] || DEFAULT_LOOK;
   const g = new THREE.Group();
 
-  // Body — capsule
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color, emissive: STATE_EMISSIVE.idle, emissiveIntensity: 0.4,
-    roughness: 0.35, metalness: 0.3 });
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.45, 0.9, 6, 12), bodyMat);
-  body.position.y = 0.95; body.castShadow = true;
-  g.add(body);
+  const skinMat = new THREE.MeshStandardMaterial({
+    color: look.skin, roughness: 0.6, metalness: 0.05 });
+  const outfitMat = new THREE.MeshStandardMaterial({
+    color: look.outfit, emissive: STATE_EMISSIVE.idle, emissiveIntensity: 0.3,
+    roughness: 0.4, metalness: 0.2 });
+  const outfitAccentMat = new THREE.MeshStandardMaterial({
+    color: look.outfitAccent, roughness: 0.4, metalness: 0.3 });
+  const hairMat = new THREE.MeshStandardMaterial({
+    color: look.hair, roughness: 0.8, metalness: 0.05 });
 
-  // Head — sphere
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.35, 24, 16),
-    new THREE.MeshStandardMaterial({ color: 0xfde68a, roughness: 0.5 }));
-  head.position.y = 1.85; head.castShadow = true;
-  g.add(head);
-
-  // Eyes (just dots so the head feels alive)
-  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x0b1020 });
-  for (const ex of [-0.11, 0.11]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 8), eyeMat);
-    eye.position.set(ex, 1.9, 0.3); g.add(eye);
+  // --- LEGS ---
+  for (const lx of [-0.15, 0.15]) {
+    // Upper leg
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.08, 0.55, 8),
+      new THREE.MeshStandardMaterial({ color: look.skirtColor || 0x1e293b, roughness: 0.5 }));
+    leg.position.set(lx, 0.38, 0);
+    g.add(leg);
+    // Shoe
+    const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.1, 0.22),
+      new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.3, metalness: 0.4 }));
+    shoe.position.set(lx, 0.08, 0.04);
+    g.add(shoe);
   }
 
-  // Role pedestal — glowing disk
-  const ped = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.65, 0.65, 0.08, 24),
-    new THREE.MeshStandardMaterial({ color, emissive: color,
-      emissiveIntensity: 0.5, transparent: true, opacity: 0.85 }));
-  ped.position.y = 0.05; g.add(ped);
+  // --- TORSO ---
+  // Main body
+  const torso = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.28, 0.22, 0.65, 12), outfitMat);
+  torso.position.y = 0.95;
+  torso.castShadow = true;
+  g.add(torso);
 
-  // Label above head
-  const label = makeLabelSprite(agent.display_name + (agent.role==='director'?' ★':''));
-  label.position.y = 2.6; g.add(label);
+  // Shoulders
+  const shoulders = new THREE.Mesh(
+    new THREE.BoxGeometry(0.7, 0.12, 0.32), outfitMat);
+  shoulders.position.y = 1.22;
+  g.add(shoulders);
+
+  // Collar / accent stripe
+  const collar = new THREE.Mesh(
+    new THREE.TorusGeometry(0.22, 0.04, 6, 16), outfitAccentMat);
+  collar.position.y = 1.3;
+  collar.rotation.x = Math.PI / 2;
+  g.add(collar);
+
+  // Skirt (for female characters)
+  if (look.skirtColor) {
+    const skirt = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.18, 0.35, 0.35, 12),
+      new THREE.MeshStandardMaterial({ color: look.skirtColor, roughness: 0.5 }));
+    skirt.position.y = 0.62;
+    g.add(skirt);
+  }
+
+  // --- ARMS ---
+  for (const side of [-1, 1]) {
+    // Upper arm
+    const upperArm = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.055, 0.35, 8), outfitMat);
+    upperArm.position.set(side * 0.4, 1.1, 0);
+    upperArm.rotation.z = side * 0.25;
+    g.add(upperArm);
+    // Lower arm (skin)
+    const forearm = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.04, 0.3, 8), skinMat);
+    forearm.position.set(side * 0.48, 0.85, 0.05);
+    forearm.rotation.z = side * 0.15;
+    g.add(forearm);
+    // Hand
+    const hand = new THREE.Mesh(
+      new THREE.SphereGeometry(0.05, 8, 8), skinMat);
+    hand.position.set(side * 0.5, 0.7, 0.08);
+    g.add(hand);
+  }
+
+  // --- NECK ---
+  const neck = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.08, 0.1, 0.12, 8), skinMat);
+  neck.position.y = 1.38;
+  g.add(neck);
+
+  // --- HEAD ---
+  const headGroup = new THREE.Group();
+  headGroup.position.y = 1.55;
+
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.28, 24, 18), skinMat);
+  head.castShadow = true;
+  headGroup.add(head);
+
+  // --- FACE ---
+  // Eyes
+  const eyeWhiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const irisMat = new THREE.MeshBasicMaterial({ color: look.eyeColor });
+  const pupilMat = new THREE.MeshBasicMaterial({ color: 0x0a0a15 });
+  for (const ex of [-0.09, 0.09]) {
+    // Eye white
+    const eyeWhite = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 8), eyeWhiteMat);
+    eyeWhite.position.set(ex, 0.04, 0.24);
+    headGroup.add(eyeWhite);
+    // Iris
+    const iris = new THREE.Mesh(new THREE.SphereGeometry(0.028, 10, 8), irisMat);
+    iris.position.set(ex, 0.04, 0.27);
+    headGroup.add(iris);
+    // Pupil
+    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.015, 8, 8), pupilMat);
+    pupil.position.set(ex, 0.04, 0.28);
+    headGroup.add(pupil);
+    // Eyelid crease
+    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.012, 0.02),
+      new THREE.MeshStandardMaterial({ color: look.hair, roughness: 1 }));
+    brow.position.set(ex, 0.085, 0.25);
+    brow.rotation.x = -0.15;
+    headGroup.add(brow);
+  }
+  // Nose
+  const nose = new THREE.Mesh(
+    new THREE.ConeGeometry(0.025, 0.06, 6),
+    new THREE.MeshStandardMaterial({ color: look.skin, roughness: 0.7 }));
+  nose.position.set(0, -0.01, 0.28);
+  nose.rotation.x = -0.3;
+  headGroup.add(nose);
+  // Mouth
+  if (look.lipColor) {
+    const lip = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.012, 4, 12),
+      new THREE.MeshStandardMaterial({ color: look.lipColor, roughness: 0.4 }));
+    lip.position.set(0, -0.07, 0.24);
+    lip.rotation.x = 0.2;
+    headGroup.add(lip);
+  } else {
+    const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.01, 0.01),
+      new THREE.MeshStandardMaterial({ color: 0xc4756e, roughness: 0.5 }));
+    mouth.position.set(0, -0.07, 0.27);
+    headGroup.add(mouth);
+  }
+  // Ears
+  for (const side of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 6), skinMat);
+    ear.position.set(side * 0.27, 0, 0);
+    ear.scale.set(0.6, 1, 0.7);
+    headGroup.add(ear);
+  }
+
+  // --- HAIR ---
+  if (look.hairStyle === 'long') {
+    // Long flowing hair (Света)
+    const hairTop = new THREE.Mesh(
+      new THREE.SphereGeometry(0.3, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.6), hairMat);
+    hairTop.position.set(0, 0.05, -0.02);
+    headGroup.add(hairTop);
+    // Back hair flowing down
+    const hairBack = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.22, 0.15, 0.55, 10), hairMat);
+    hairBack.position.set(0, -0.25, -0.12);
+    headGroup.add(hairBack);
+    // Side strands
+    for (const side of [-1, 1]) {
+      const strand = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.06, 0.04, 0.4, 6), hairMat);
+      strand.position.set(side * 0.22, -0.15, 0.05);
+      strand.rotation.z = side * 0.15;
+      headGroup.add(strand);
+    }
+  } else if (look.hairStyle === 'ponytail') {
+    // Ponytail (Аня)
+    const hairTop = new THREE.Mesh(
+      new THREE.SphereGeometry(0.3, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), hairMat);
+    hairTop.position.set(0, 0.04, 0);
+    headGroup.add(hairTop);
+    // Ponytail
+    const tail = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.05, 0.5, 8), hairMat);
+    tail.position.set(0, 0.02, -0.28);
+    tail.rotation.x = 0.8;
+    headGroup.add(tail);
+    // Hair tie
+    const tie = new THREE.Mesh(
+      new THREE.TorusGeometry(0.08, 0.02, 6, 12),
+      new THREE.MeshStandardMaterial({ color: 0xec4899 }));
+    tie.position.set(0, 0.08, -0.25);
+    tie.rotation.x = 0.6;
+    headGroup.add(tie);
+    // Bangs
+    const bangs = new THREE.Mesh(
+      new THREE.BoxGeometry(0.35, 0.06, 0.12), hairMat);
+    bangs.position.set(0, 0.16, 0.2);
+    bangs.rotation.x = -0.3;
+    headGroup.add(bangs);
+  } else if (look.hairStyle === 'buzz') {
+    // Buzz cut (Костя)
+    const buzz = new THREE.Mesh(
+      new THREE.SphereGeometry(0.29, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), hairMat);
+    buzz.position.set(0, 0.02, 0);
+    headGroup.add(buzz);
+  } else {
+    // Short styled hair (Игорь)
+    const hairTop = new THREE.Mesh(
+      new THREE.SphereGeometry(0.3, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.5), hairMat);
+    hairTop.position.set(0, 0.04, 0.02);
+    headGroup.add(hairTop);
+    // Side part
+    const sidePart = new THREE.Mesh(
+      new THREE.BoxGeometry(0.15, 0.06, 0.25), hairMat);
+    sidePart.position.set(-0.15, 0.12, 0.05);
+    sidePart.rotation.z = 0.2;
+    headGroup.add(sidePart);
+  }
+
+  g.add(headGroup);
+
+  // --- ACCESSORY ---
+  if (look.accessory === 'clipboard') {
+    // Clipboard for director
+    const board = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.28, 0.02),
+      new THREE.MeshStandardMaterial({ color: 0x8b5e3c, roughness: 0.7 }));
+    board.position.set(-0.55, 0.85, 0.15);
+    board.rotation.z = 0.3;
+    g.add(board);
+    const paper = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.22, 0.005),
+      new THREE.MeshStandardMaterial({ color: 0xfefce8 }));
+    paper.position.set(-0.55, 0.85, 0.17);
+    paper.rotation.z = 0.3;
+    g.add(paper);
+  } else if (look.accessory === 'laptop') {
+    // Laptop for dev
+    const base = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.02, 0.2),
+      new THREE.MeshStandardMaterial({ color: 0x374151, metalness: 0.6, roughness: 0.3 }));
+    base.position.set(0, 0.72, 0.35);
+    g.add(base);
+    const screen = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.18, 0.01),
+      new THREE.MeshStandardMaterial({ color: 0x0f172a, emissive: 0x22d3ee,
+        emissiveIntensity: 0.6 }));
+    screen.position.set(0, 0.82, 0.44);
+    screen.rotation.x = -0.3;
+    g.add(screen);
+  } else if (look.accessory === 'palette') {
+    // Paint palette for designer
+    const palette = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.15, 0.15, 0.02, 12),
+      new THREE.MeshStandardMaterial({ color: 0xd4a574, roughness: 0.7 }));
+    palette.position.set(0.55, 0.8, 0.1);
+    palette.rotation.z = -0.5;
+    palette.rotation.x = 0.8;
+    g.add(palette);
+    // Paint dots
+    const paintColors = [0xef4444, 0x3b82f6, 0xfbbf24, 0x22c55e, 0xa855f7];
+    paintColors.forEach((pc, i) => {
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 8),
+        new THREE.MeshStandardMaterial({ color: pc, roughness: 0.3 }));
+      const a = (i / paintColors.length) * Math.PI * 1.2 + 0.5;
+      dot.position.set(0.55 + Math.cos(a) * 0.09, 0.82, 0.1 + Math.sin(a) * 0.09);
+      g.add(dot);
+    });
+  } else if (look.accessory === 'magnifier') {
+    // Magnifying glass for QA
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.025, 0.2, 8),
+      new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.5 }));
+    handle.position.set(0.52, 0.72, 0.18);
+    handle.rotation.z = -0.7;
+    g.add(handle);
+    const lens = new THREE.Mesh(new THREE.TorusGeometry(0.08, 0.015, 8, 16),
+      new THREE.MeshStandardMaterial({ color: 0xfbbf24, metalness: 0.7, roughness: 0.2 }));
+    lens.position.set(0.48, 0.88, 0.18);
+    g.add(lens);
+    const glass = new THREE.Mesh(new THREE.CircleGeometry(0.07, 16),
+      new THREE.MeshStandardMaterial({ color: 0xbfdbfe, transparent: true, opacity: 0.3 }));
+    glass.position.set(0.48, 0.88, 0.185);
+    g.add(glass);
+  }
+
+  // --- PEDESTAL ---
+  const pedMat = new THREE.MeshStandardMaterial({
+    color, emissive: color, emissiveIntensity: 0.5,
+    transparent: true, opacity: 0.85 });
+  const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.65, 0.06, 32), pedMat);
+  ped.position.y = 0.03; g.add(ped);
+  // Ring glow
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.6, 0.02, 8, 32),
+    new THREE.MeshStandardMaterial({ color, emissive: color,
+      emissiveIntensity: 0.8, transparent: true, opacity: 0.6 }));
+  ring.position.y = 0.07;
+  ring.rotation.x = Math.PI / 2;
+  g.add(ring);
+
+  // --- LABEL ---
+  const roleLabels = { director: 'Директор', dev: 'Разработчик', designer: 'Дизайнер', qa: 'QA' };
+  const labelText = agent.display_name + (agent.role === 'director' ? ' ★' : '');
+  const label = makeLabelSprite(labelText, color);
+  label.position.y = 2.2; g.add(label);
+
+  // Role sub-label
+  const roleSpr = makeRoleSprite(roleLabels[agent.role] || agent.role, color);
+  roleSpr.position.y = 1.95; g.add(roleSpr);
 
   // Place around circle
-  const R = 3.4;
+  const R = 3.8;
   g.position.set(Math.cos(angle) * R, 0, Math.sin(angle) * R);
-  g.rotation.y = -angle + Math.PI / 2; // face center
-  g.userData = { name: agent.name, role: agent.role, body, head, ped, label,
-                 baseY: 0, t0: Math.random() * 10 };
+  g.rotation.y = -angle + Math.PI / 2;
+  g.userData = { name: agent.name, role: agent.role, body: torso, head: headGroup,
+                 ped, ring, label, baseY: 0, t0: Math.random() * 10 };
   scene.add(g);
   return g;
+}
+
+function makeRoleSprite(text, roleColor) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 64;
+  const ctx = c.getContext('2d');
+  const hex = '#' + (roleColor || 0x6366f1).toString(16).padStart(6,'0');
+  ctx.fillStyle = hex;
+  ctx.globalAlpha = 0.7;
+  ctx.font = '24px -apple-system, Segoe UI, system-ui';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, 128, 32);
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const sp = new THREE.Sprite(mat);
+  sp.scale.set(1.4, 0.35, 1);
+  return sp;
 }
 
 // ---------------- Data wiring ----------------
@@ -361,7 +747,6 @@ async function fetchJSON(url, opts) {
 }
 
 function applyState() {
-  // Update avatar materials based on STATE
   for (const av of avatars) {
     const st = STATE[av.userData.name] || {};
     const s = st.state || 'offline';
@@ -370,6 +755,9 @@ function applyState() {
     av.userData.body.material.emissive.setHex(emissive);
     av.userData.body.material.emissiveIntensity = (s === 'idle' || s === 'offline') ? 0.25 : 0.9;
     av.userData.ped.material.emissiveIntensity = (s === 'offline') ? 0.1 : 0.6;
+    if (av.userData.ring) {
+      av.userData.ring.material.emissiveIntensity = (s === 'offline') ? 0.2 : 0.8;
+    }
   }
 }
 
@@ -450,19 +838,30 @@ function toast(msg, isErr=false) {
 document.getElementById('send').onclick = async () => {
   const textEl = document.getElementById('text');
   const text = textEl.value.trim();
-  if (!text) { toast('Пустая задача', true); return; }
+  if (!text) { toast('Напишите задачу', true); return; }
   const target = document.getElementById('target').value || null;
   const btn = document.getElementById('send'); btn.disabled = true;
+  btn.textContent = '⏳';
   try {
-    await fetchJSON('/api/tasks', {
+    const res = await fetchJSON('/api/tasks', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ text, target_agent: target }),
     });
     textEl.value = '';
-    toast(target ? `Отправлено: ${target}` : 'Отправлено Свете');
+    const agentName = target || 'sveta';
+    toast(target ? `✓ Задача → ${target}` : '✓ Задача → Света распределит');
+    // Show connection animation from director to target
+    if (target && target !== 'sveta') showConnection('sveta', target);
+    // Switch to chat tab to watch agents work
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelector('[data-tab="chat-tab"]')?.classList.add('active');
+    document.getElementById('chat-tab')?.classList.add('active');
+    // Force immediate poll
+    setTimeout(poll, 300);
   } catch (e) { toast('Ошибка: ' + e.message, true); }
-  finally { btn.disabled = false; }
+  finally { btn.disabled = false; btn.textContent = 'Отправить'; }
 };
 document.getElementById('text').addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') document.getElementById('send').click();
@@ -484,13 +883,96 @@ renderer.domElement.addEventListener('click', (ev) => {
   }
 });
 
+// ---------------- Task history ----------------
+function renderTaskHistory(data) {
+  // Task list
+  const wrap = document.getElementById('task-history');
+  const tasks = data.tasks || [];
+  if (!tasks.length) {
+    wrap.innerHTML = '<div class="empty">Задач пока нет. Отправьте первую через форму ниже.</div>';
+    return;
+  }
+  wrap.innerHTML = tasks.slice(0, 20).map(t => {
+    const status = t.status || 'created';
+    const statusLabels = {
+      created: 'новая', assigned: 'назначена', in_progress: 'в работе',
+      review: 'ревью', done: 'готово', failed: 'ошибка'
+    };
+    const agentInfo = t.assigned_to ? ` → ${escapeHTML(t.assigned_to)}` : '';
+    const results = (t.results||[]).length ? ` · ${t.results.length} результат(ов)` : '';
+    return `
+    <div class="task-item">
+      <div class="t-header">
+        <span class="t-text">${escapeHTML(t.text.substring(0, 100))}</span>
+        <span class="status-badge ${status}">${statusLabels[status]||status}</span>
+      </div>
+      <div class="t-meta">${t.source}${agentInfo}${results} · ${humanTime(t.created_at)}</div>
+    </div>`;
+  }).join('');
+}
+
+// ---------------- Agent Chat ----------------
+let lastConvCount = 0;
+function renderChat(conversations) {
+  const wrap = document.getElementById('chat-messages');
+  if (!conversations || !conversations.length) {
+    wrap.innerHTML = '<div class="chat-empty">Отправьте задачу — агенты начнут работать и писать сюда.</div>';
+    return;
+  }
+  // Show latest conversation first
+  const sorted = [...conversations].reverse();
+  let html = '';
+  for (const conv of sorted) {
+    const statusLabel = {processing: 'в работе...', done: 'готово', failed: 'ошибка'}[conv.status] || conv.status;
+    html += `<div class="chat-status ${conv.status}">Задача: ${statusLabel}</div>`;
+    for (const m of conv.messages) {
+      const t = m.timestamp ? humanTime(m.timestamp) : '';
+      html += `<div class="chat-msg role-${escapeHTML(m.role)}">`
+        + `<div class="msg-header">`
+        + `<span class="msg-name">${escapeHTML(m.display_name)}</span>`
+        + `<span class="msg-role">${escapeHTML(m.role)}</span>`
+        + `<span class="msg-time">${t}</span>`
+        + `</div>`
+        + `<div class="msg-text">${escapeHTML(m.text)}</div>`
+        + `</div>`;
+    }
+    if (conv.status === 'processing') {
+      html += '<div class="chat-status processing typing-indicator">Агенты работают</div>';
+    }
+  }
+  wrap.innerHTML = html;
+  // Auto-scroll to bottom if new messages
+  const newCount = sorted.reduce((n, c) => n + c.messages.length, 0);
+  if (newCount > lastConvCount) {
+    wrap.scrollTop = wrap.scrollHeight;
+    lastConvCount = newCount;
+    // Show connections for active agents
+    if (sorted[0]?.status === 'processing' && sorted[0]?.messages.length > 0) {
+      const lastMsg = sorted[0].messages[sorted[0].messages.length - 1];
+      if (lastMsg.agent_name !== 'sveta' && lastMsg.agent_name !== 'system') {
+        showConnection('sveta', lastMsg.agent_name);
+      }
+    }
+  }
+}
+
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const targetId = tab.dataset.tab;
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(targetId)?.classList.add('active');
+  });
+});
+
 // ---------------- Poll loop ----------------
 async function poll() {
   try {
     const s = await fetchJSON('/api/status');
     if (!AGENTS.length) {
       AGENTS = s.agents_config;
-      // build avatars now
       const n = AGENTS.length;
       AGENTS.forEach((a, i) => {
         const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
@@ -503,15 +985,98 @@ async function poll() {
       s.state.updated_at ? humanTime(s.state.updated_at) : '—';
     applyState();
     renderAgentsList();
+
+    // Render current task from status
+    const ct = s.state.current_task;
+    if (ct) {
+      const ctEl = document.getElementById('current-task');
+      ctEl.style.display = '';
+      document.getElementById('ct-text').textContent = ct.text || '';
+      document.getElementById('ct-agent').textContent = ct.assigned_to
+        ? `→ ${ct.assigned_to}` : 'Света распределяет...';
+    } else {
+      document.getElementById('current-task').style.display = 'none';
+    }
   } catch (e) { console.warn('status poll:', e); }
 
   try {
     const p = await fetchJSON('/api/projects');
     renderProjects(p.projects);
   } catch (e) { console.warn('projects poll:', e); }
+
+  try {
+    const th = await fetchJSON('/api/tasks/history');
+    renderTaskHistory(th);
+    document.getElementById('stat-active').textContent = th.active ?? 0;
+  } catch (e) { console.warn('tasks poll:', e); }
+
+  try {
+    const cv = await fetchJSON('/api/tasks/conversations');
+    renderChat(cv.conversations);
+  } catch (e) { console.warn('conversations poll:', e); }
 }
 poll();
 setInterval(poll, 2000);
+
+// ---------------- Connection lines (task delegation) ----------------
+const connectionLines = [];
+const lineMat = new THREE.LineBasicMaterial({
+  color: 0x6366f1, transparent: true, opacity: 0.6, linewidth: 2
+});
+
+function showConnection(fromName, toName) {
+  const from = avatars.find(a => a.userData.name === fromName);
+  const to = avatars.find(a => a.userData.name === toName);
+  if (!from || !to) return;
+  const pts = [
+    new THREE.Vector3(from.position.x, 1.5, from.position.z),
+    new THREE.Vector3(0, 2.0, 0),  // route through hub
+    new THREE.Vector3(to.position.x, 1.5, to.position.z),
+  ];
+  const curve = new THREE.QuadraticBezierCurve3(pts[0], pts[1], pts[2]);
+  const geo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(20));
+  const line = new THREE.Line(geo, lineMat.clone());
+  line.userData.createdAt = performance.now();
+  line.userData.lifetime = 4000;
+  scene.add(line);
+  connectionLines.push(line);
+}
+
+function updateConnections() {
+  const now = performance.now();
+  for (let i = connectionLines.length - 1; i >= 0; i--) {
+    const line = connectionLines[i];
+    const age = now - line.userData.createdAt;
+    if (age > line.userData.lifetime) {
+      scene.remove(line);
+      line.geometry.dispose();
+      line.material.dispose();
+      connectionLines.splice(i, 1);
+    } else {
+      const progress = age / line.userData.lifetime;
+      line.material.opacity = 0.6 * (1 - progress);
+    }
+  }
+}
+
+// Particles floating around hub
+const particleCount = 40;
+const particleGeo = new THREE.BufferGeometry();
+const particlePositions = new Float32Array(particleCount * 3);
+for (let i = 0; i < particleCount; i++) {
+  const angle = Math.random() * Math.PI * 2;
+  const r = 1.5 + Math.random() * 2;
+  particlePositions[i*3] = Math.cos(angle) * r;
+  particlePositions[i*3+1] = 0.8 + Math.random() * 2;
+  particlePositions[i*3+2] = Math.sin(angle) * r;
+}
+particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+const particleMat = new THREE.PointsMaterial({
+  color: 0x6366f1, size: 0.06, transparent: true, opacity: 0.5,
+  blending: THREE.AdditiveBlending, depthWrite: false
+});
+const particles = new THREE.Points(particleGeo, particleMat);
+scene.add(particles);
 
 // ---------------- Animation ----------------
 const clock = new THREE.Clock();
@@ -520,24 +1085,33 @@ function animate() {
   hub.rotation.x = t * 0.6; hub.rotation.y = t * 0.8;
   hub.position.y = 1.4 + Math.sin(t * 1.5) * 0.1;
 
+  // Particles rotation
+  particles.rotation.y = t * 0.15;
+  const pos = particles.geometry.attributes.position;
+  for (let i = 0; i < particleCount; i++) {
+    pos.array[i*3+1] += Math.sin(t * 2 + i) * 0.002;
+  }
+  pos.needsUpdate = true;
+
   for (const av of avatars) {
     const st = av.userData.currentState || 'offline';
     const local = t + av.userData.t0;
-    // gentle idle bob
-    av.position.y = Math.sin(local * 1.2) * 0.05;
-    // thinking: spin head, glow pulses
+    av.position.y = Math.sin(local * 1.2) * 0.04;
     if (st === 'thinking') {
-      av.userData.head.rotation.y = local * 2.2;
+      av.userData.head.rotation.y = local * 1.8;
       av.userData.body.material.emissiveIntensity = 0.5 + 0.5 * Math.abs(Math.sin(local * 3));
+      if (av.userData.ring) av.userData.ring.rotation.z = local * 2;
     } else if (st === 'typing') {
-      av.position.y += Math.abs(Math.sin(local * 6)) * 0.18;
+      av.position.y += Math.abs(Math.sin(local * 5)) * 0.12;
       av.userData.body.material.emissiveIntensity = 0.6 + 0.3 * Math.sin(local * 5);
     } else if (st === 'error') {
       av.userData.body.material.emissiveIntensity = 0.5 + 0.5 * Math.sin(local * 8);
     } else {
-      av.userData.head.rotation.y = Math.sin(local * 0.8) * 0.25;
+      av.userData.head.rotation.y = Math.sin(local * 0.6) * 0.2;
     }
   }
+
+  updateConnections();
   controls.update();
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
@@ -582,6 +1156,8 @@ class _Handler(BaseHTTPRequestHandler):
     config: AppConfig
     task_queue: TaskQueue
     status_board: StatusBoard
+    task_tracker: TaskTracker
+    task_engine: TaskEngine | None
 
     # quieter logs
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -654,6 +1230,24 @@ class _Handler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/api/tasks/history":
+            self._send_json(200, self.task_tracker.snapshot())
+            return
+
+        if path == "/api/tasks/conversations":
+            convs = self.task_engine.get_all_conversations() if self.task_engine else []
+            self._send_json(200, {"conversations": convs})
+            return
+
+        if path.startswith("/api/tasks/conversation/"):
+            tid = path.split("/")[-1]
+            conv = self.task_engine.get_conversation(tid) if self.task_engine else None
+            if conv:
+                self._send_json(200, conv)
+            else:
+                self._send_json(404, {"error": "conversation not found"})
+            return
+
         if path.startswith("/workspace/"):
             self._serve_workspace(path[len("/workspace/"):])
             return
@@ -671,6 +1265,9 @@ class _Handler(BaseHTTPRequestHandler):
             if not text:
                 self._send_json(400, {"error": "empty text"})
                 return
+            if len(text) > 4000:
+                self._send_json(400, {"error": "text too long (max 4000 chars)"})
+                return
             if target and target not in {a.name for a in self.config.all_agents}:
                 self._send_json(400, {"error": f"unknown agent: {target}"})
                 return
@@ -681,6 +1278,14 @@ class _Handler(BaseHTTPRequestHandler):
                 source="dashboard",
             )
             self.task_queue.append(task)
+            # Also track the task immediately for dashboard visibility
+            self.task_tracker.create(task.id, text, source="dashboard")
+            if target:
+                self.task_tracker.assign(task.id, target)
+            self.status_board.set_current_task(text, assigned_to=target)
+            # Submit to TaskEngine for autonomous LLM processing
+            if self.task_engine:
+                self.task_engine.submit(task.id, text, target)
             log.info("Задача из дашборда: id=%s target=%s len=%d", task.id, target or "auto", len(text))
             self._send_json(200, {"ok": True, "task": asdict(task)})
             return
@@ -730,6 +1335,14 @@ class ThreadedServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
 
 
+def _run_engine_loop(engine: TaskEngine) -> None:
+    """Run TaskEngine's async event loop in a background thread."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    engine.start(loop)
+    loop.run_forever()
+
+
 def serve(config: AppConfig, host: str | None = None, port: int | None = None) -> None:
     """Запустить дашборд (блокирующий вызов)."""
     host = host or config.dashboard_host
@@ -737,12 +1350,23 @@ def serve(config: AppConfig, host: str | None = None, port: int | None = None) -
 
     task_queue = TaskQueue(config.data_dir)
     status_board = StatusBoard(config.data_dir)
+    task_tracker = TaskTracker(config.data_dir)
+
+    # Start TaskEngine for autonomous LLM processing
+    task_engine = TaskEngine(config)
+    engine_thread = threading.Thread(
+        target=_run_engine_loop, args=(task_engine,), daemon=True, name="task-engine"
+    )
+    engine_thread.start()
+    log.info("TaskEngine started in background thread")
 
     # Bind shared state to handler via closure subclass.
     handler_cls = type("BoundHandler", (_Handler,), {
         "config": config,
         "task_queue": task_queue,
         "status_board": status_board,
+        "task_tracker": task_tracker,
+        "task_engine": task_engine,
     })
 
     # Регенерируем hub при старте — чтобы /workspace/index.html был свежим.
@@ -754,7 +1378,8 @@ def serve(config: AppConfig, host: str | None = None, port: int | None = None) -
         log.warning("Не смог сгенерировать hub-индекс на старте: %s", e)
 
     server = ThreadedServer((host, port), handler_cls)
-    url = f"http://{host}:{port}/"
+    display_host = "localhost" if host in ("0.0.0.0", "::") else host
+    url = f"http://{display_host}:{port}/"
     log.info("Дашборд: %s  (Ctrl+C — выход)", url)
     try:
         server.serve_forever()
