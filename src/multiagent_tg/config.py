@@ -48,7 +48,7 @@ class AppConfig:
 
     agents: list[AgentConfig]  # только enabled
 
-    dashboard_host: str = "127.0.0.1"
+    dashboard_host: str = "0.0.0.0"
     dashboard_port: int = 8000
     all_agents: list[AgentConfig] = field(default_factory=list)  # вкл. disabled
 

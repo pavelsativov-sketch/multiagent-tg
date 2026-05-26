@@ -137,9 +137,28 @@ class TaskEngine:
             conv.status = "done"
         except Exception as e:
             log.exception("Task %s failed: %s", task_id, e)
+            err_str = str(e)
+            if "free-models-per-day" in err_str:
+                user_msg = (
+                    "Дневной лимит бесплатных запросов исчерпан (50/день). "
+                    "Добавьте $0.10 на https://openrouter.ai/settings/credits "
+                    "для 1000 запросов/день, или подождите до завтра."
+                )
+            elif "429" in err_str or "rate" in err_str.lower():
+                user_msg = (
+                    "Модели временно перегружены (rate limit). "
+                    "Подождите 1-2 минуты и попробуйте снова."
+                )
+            elif "404" in err_str or "NOT_FOUND" in err_str:
+                user_msg = (
+                    "Модель не найдена на сервере. Система автоматически "
+                    "попробует другие модели при следующем запросе."
+                )
+            else:
+                user_msg = f"Ошибка при выполнении: {e}"
             conv.add(AgentMessage(
                 agent_name="system", display_name="Система", role="system",
-                text=f"Ошибка при выполнении: {e}",
+                text=user_msg,
             ))
             self.tracker.set_status(task_id, "failed")
             conv.status = "failed"

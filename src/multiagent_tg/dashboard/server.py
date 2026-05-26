@@ -1378,7 +1378,8 @@ def serve(config: AppConfig, host: str | None = None, port: int | None = None) -
         log.warning("Не смог сгенерировать hub-индекс на старте: %s", e)
 
     server = ThreadedServer((host, port), handler_cls)
-    url = f"http://{host}:{port}/"
+    display_host = "localhost" if host in ("0.0.0.0", "::") else host
+    url = f"http://{display_host}:{port}/"
     log.info("Дашборд: %s  (Ctrl+C — выход)", url)
     try:
         server.serve_forever()
