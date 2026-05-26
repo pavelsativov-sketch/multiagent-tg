@@ -23,7 +23,7 @@ defaults:
   #     Фолбэк: если модель недоступна (404/429), система автоматически пробует другие.
   #   Ollama:     qwen3:14b (баланс), qwen3:32b (мощь)
   #   OpenAI:     o4-mini (reasoning), gpt-4.1-mini (быстрый), gpt-4.1 (код)
-  model: "google/gemma-4-31b-it:free"
+  model: "gemini-2.5-flash"
 
 agents:
   - name: sveta
@@ -32,7 +32,7 @@ agents:
     role: "director"
     session: "sveta"
     phone: "+79292723711"
-    model: "google/gemma-4-31b-it:free"
+    model: "gemini-2.5-flash"
     temperature: 0.4
     max_tokens: 1400
     tools: [telegram, filesystem]
@@ -86,7 +86,7 @@ agents:
     # Лучшая модель для кода по провайдеру:
     #   Gemini: gemini-2.5-pro | OpenRouter: qwen/qwen3-coder:free
     #   Ollama: qwen3:32b      | OpenAI: gpt-4.1 или o4-mini
-    model: "google/gemma-4-31b-it:free"
+    model: "gemini-2.5-flash"
     temperature: 0.5
     max_tokens: 2000
     tools: [filesystem, shell, telegram]
@@ -118,7 +118,7 @@ agents:
     role: "designer"
     session: "anya"
     phone: "+79990000003"   # ЗАМЕНИТЕ на свой номер
-    model: "google/gemma-4-31b-it:free"
+    model: "gemini-2.5-flash"
     temperature: 0.9
     tools: [filesystem]
     system_prompt: |
@@ -142,7 +142,7 @@ agents:
     role: "qa"
     session: "kostya"
     phone: "+79990000004"   # ЗАМЕНИТЕ на свой номер
-    model: "google/gemma-4-31b-it:free"
+    model: "gemini-2.5-flash"
     temperature: 0.4
     tools: [filesystem]
     system_prompt: |

@@ -24,6 +24,14 @@ OPENROUTER_FREE_FALLBACKS: list[str] = [
     "nvidia/nemotron-3-super-120b-a12b:free",
 ]
 
+# Фолбэки для Google Gemini.
+GEMINI_FALLBACKS: list[str] = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+]
+
 
 @dataclass
 class ChatMessage:
@@ -107,6 +115,10 @@ class LLMClient:
         models_to_try = [self.model]
         if self._is_openrouter:
             for fb in OPENROUTER_FREE_FALLBACKS:
+                if fb != self.model and fb not in models_to_try:
+                    models_to_try.append(fb)
+        elif self._is_gemini:
+            for fb in GEMINI_FALLBACKS:
                 if fb != self.model and fb not in models_to_try:
                     models_to_try.append(fb)
 
